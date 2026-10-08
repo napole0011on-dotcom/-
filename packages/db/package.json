@@ -1,0 +1,28 @@
+{
+  "name": "@cms/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@cms/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "migrate": "tsx --conditions=@cms/source src/cli.ts up",
+    "rollback": "tsx --conditions=@cms/source src/cli.ts down",
+    "status": "tsx --conditions=@cms/source src/cli.ts status"
+  },
+  "dependencies": {
+    "@cms/core": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}
