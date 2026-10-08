@@ -1,0 +1,46 @@
+# Local infrastructure: PostgreSQL + S3-compatible object storage (SeaweedFS).
+# Values come from .env in this folder (docker compose reads it automatically).
+# Apps (api/bot/web) run on the host with pnpm for now; containerising them is stage 5.
+name: content-agents
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  storage:
+    # MinIO no longer publishes community images on Docker Hub; SeaweedFS speaks the same S3 API.
+    image: chrislusf/seaweedfs:4.48
+    restart: unless-stopped
+    command: ['mini', '-dir=/data', '-bucket=${S3_BUCKET:?set S3_BUCKET in .env}']
+    environment:
+      # SeaweedFS creates an admin S3 identity from these variables.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
+    ports:
+      - '127.0.0.1:${S3_PORT:-8333}:8333'
+    volumes:
+      - seaweed:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8333/healthz']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  pgdata:
+  seaweed:
