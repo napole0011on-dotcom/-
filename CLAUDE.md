@@ -8,8 +8,8 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 
 | Этап                                                    | Статус                     |
 | ------------------------------------------------------- | -------------------------- |
-| 0. Каркас                                               | готово, ждёт подтверждения |
-| 1. Ядро (модели, автомат статусов, очередь, LLM-клиент) | не начат                   |
+| 0. Каркас                                               | готово                     |
+| 1. Ядро (модели, автомат статусов, очередь, LLM-клиент) | готово, ждёт подтверждения |
 | 2. Copywriter + Critic + CEO + Telegram-гейты           | не начат                   |
 | 3. Image (Magnific), Video Ideas, SEO, DAG              | не начат                   |
 | 4. Instagram Analyst (CSV → Graph API)                  | не начат                   |
@@ -20,7 +20,8 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 
 TypeScript (strict) · Node.js ≥ 22.12 · pnpm workspaces · PostgreSQL 16 · Drizzle ORM (+ свой
 раннер миграций) · Fastify · pino · Zod 4 · Vitest · ESLint 10 + Prettier · Docker Compose
-(Postgres + SeaweedFS как S3). Дальше по плану: pg-boss, @anthropic-ai/sdk, grammY, React + Vite, sharp.
+(Postgres + SeaweedFS как S3) · pg-boss 12 (очередь в Postgres) · @anthropic-ai/sdk. Дальше по плану: grammY,
+React + Vite, sharp.
 
 ## Структура
 
@@ -30,10 +31,19 @@ packages/core       конфиг (Zod-валидация env), логгер (pin
 packages/db         Drizzle-схема, клиент, раннер миграций с откатом, CLI
 packages/db/migrations  NNNN_name.sql (drizzle-kit) + NNNN_name.down.sql (вручную, обязателен)
 packages/providers  интерфейсы провайдеров, mock-реализации, хранилище (local/S3), заглушка Publisher
+packages/engine     рантайм: переходы статусов, идемпотентность, бюджет, LLM-клиент, очередь (pg-boss), обслуживание
+  src/transitions.ts   transitionTask() — единственный способ сменить tasks.status; pause/resume
+  src/idempotency.ts   withIdempotency(key, fn) — побочный эффект ровно один раз
+  src/budget.ts        резерв → факт; лимиты задача/день/месяц; предупреждение 80%; доплата только человеком
+  src/llm/             LlmClient.callStructured(), транспорт Anthropic, wrapExternalData()
+  src/runs.ts, queue.ts  жизненный цикл запусков агентов, pg-boss, dead-letter
+  src/maintenance.ts   зависшие запуски, протухшие резервы, напоминания на гейтах
+  src/testkit.ts       хелперы для интеграционных тестов (временная БД, FakeTransport)
+config/model-pricing.json  цены моделей (USD за 1M токенов) — меняются без релиза
 scripts/            кроссплатформенные node-скрипты (никакого bash)
 ```
 
-Ещё не созданы (появятся на своих этапах): `apps/bot` (этап 2), `apps/web` (этап 5),
+Ещё не созданы (появятся на своих этапах): `apps/bot` и процесс-воркер (этап 2), `apps/web` (этап 5),
 `packages/agents` (этап 2).
 
 ## Команды (работают одинаково в PowerShell, cmd и bash)
@@ -54,6 +64,7 @@ pnpm typecheck
 pnpm test                # unit, без внешних сервисов
 pnpm test:integration    # нужен pnpm infra:up
 pnpm check               # всё сразу (lint, typecheck, unit, integration, build)
+pnpm demo:core           # демо ядра во временной БД с фейковым LLM (нужен pnpm infra:up)
 ```
 
 ## Правила кода
@@ -70,23 +81,41 @@ pnpm check               # всё сразу (lint, typecheck, unit, integration
 - Внешние провайдеры только за интерфейсами из `packages/providers/src/types.ts`. Реальный режим без реализации должен падать явно, а не тихо уходить в mock.
 - Всё, что касается внешних API, — по актуальной документации. Не уверен → `TODO(verify)`.
 - Conventional commits, маленькие коммиты.
+- Статус задачи — только через `transitionTask()` (DB-триггер отклоняет прямой UPDATE). Пауза — флаг, не статус.
+- Решения на гейтах (`awaiting_*` → дальше) — только `actor.kind === 'human'`; это проверяет `checkTransition()`.
+- Любой внешний побочный эффект (LLM, уведомление, экспорт) — через ключ идемпотентности.
+- Любой платный вызов — через `reserveCost()` → `finalizeCost()`/`releaseCost()`; LlmClient делает это сам.
+- Внешние тексты в промпт — только через `wrapExternalData()`; в system-промпте — `EXTERNAL_DATA_RULES`.
+- Ошибки: `TransientError` (повтор), `PermanentError` (сразу fail), `BudgetExceededError` (пауза).
+- `drizzle-orm` импортировать только из `@cms/db` (`sql`, `eq`, `and`) — иначе две копии пакета ломают типы.
+- В тестах ошибки Postgres лежат в `err.cause` (drizzle их оборачивает).
 
 ## Принятые решения
 
-| Решение                                                            | Почему                                                                                                                                                              |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Drizzle, а не Prisma                                               | Схема в TS, SQL почти как есть, без отдельного движка и шага генерации клиента; удобные транзакции и блокировки строк для автомата статусов                         |
-| Свой раннер миграций поверх SQL от drizzle-kit                     | У drizzle-kit нет down-миграций, а откат — требование. Раннер: advisory lock, транзакция на миграцию, checksum с нормализацией CRLF                                 |
-| SeaweedFS вместо MinIO                                             | MinIO перестал публиковать community-образы на Docker Hub (`minio/minio` недоступен). SeaweedFS `weed mini` — S3-совместимый, ключи из env, анонимный доступ закрыт |
-| Postgres 16                                                        | Поддерживается до ноября 2028, образ уже стабилен; переход на 17 — отдельным решением                                                                               |
-| TypeScript 6.0, не 7                                               | typescript-eslint поддерживает TS < 6.1                                                                                                                             |
-| DB-подключение собирается из `POSTGRES_*`, а не из `DATABASE_URL`  | Один источник правды для compose и приложения, нельзя рассинхронизировать пароль                                                                                    |
-| Пустая переменная в `.env` = не задана                             | Скопированный `.env.example` даёт понятную ошибку «X is required», а не странное поведение                                                                          |
-| `PUBLISH_ENABLED=true` запрещено при `DRY_RUN=true`                | Публикация включается только двумя явными действиями                                                                                                                |
-| Порты compose слушают только 127.0.0.1                             | БД и хранилище не торчат в сеть                                                                                                                                     |
-| `.gitattributes` `eol=lf`                                          | Одинаковые файлы на Windows и Linux; checksum миграций всё равно нормализует CRLF                                                                                   |
-| Приложения пока не в Docker                                        | На этапе 0 compose — только инфраструктура; контейнеры для api/bot/web — этап 5 (деплой)                                                                            |
-| CI: Linux (всё + интеграция) и Windows (lint/typecheck/unit/build) | Пользователь работает на Windows 11 — ловим несовместимость скриптов автоматически                                                                                  |
+| Решение                                                                                | Почему                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Drizzle, а не Prisma                                                                   | Схема в TS, SQL почти как есть, без отдельного движка и шага генерации клиента; удобные транзакции и блокировки строк для автомата статусов                              |
+| Свой раннер миграций поверх SQL от drizzle-kit                                         | У drizzle-kit нет down-миграций, а откат — требование. Раннер: advisory lock, транзакция на миграцию, checksum с нормализацией CRLF                                      |
+| SeaweedFS вместо MinIO                                                                 | MinIO перестал публиковать community-образы на Docker Hub (`minio/minio` недоступен). SeaweedFS `weed mini` — S3-совместимый, ключи из env, анонимный доступ закрыт      |
+| Postgres 16                                                                            | Поддерживается до ноября 2028, образ уже стабилен; переход на 17 — отдельным решением                                                                                    |
+| TypeScript 6.0, не 7                                                                   | typescript-eslint поддерживает TS < 6.1                                                                                                                                  |
+| DB-подключение собирается из `POSTGRES_*`, а не из `DATABASE_URL`                      | Один источник правды для compose и приложения, нельзя рассинхронизировать пароль                                                                                         |
+| Пустая переменная в `.env` = не задана                                                 | Скопированный `.env.example` даёт понятную ошибку «X is required», а не странное поведение                                                                               |
+| `PUBLISH_ENABLED=true` запрещено при `DRY_RUN=true`                                    | Публикация включается только двумя явными действиями                                                                                                                     |
+| Порты compose слушают только 127.0.0.1                                                 | БД и хранилище не торчат в сеть                                                                                                                                          |
+| `.gitattributes` `eol=lf`                                                              | Одинаковые файлы на Windows и Linux; checksum миграций всё равно нормализует CRLF                                                                                        |
+| Приложения пока не в Docker                                                            | На этапе 0 compose — только инфраструктура; контейнеры для api/bot/web — этап 5 (деплой)                                                                                 |
+| CI: Linux (всё + интеграция) и Windows (lint/typecheck/unit/build)                     | Пользователь работает на Windows 11 — ловим несовместимость скриптов автоматически                                                                                       |
+| Structured outputs (`output_config.format`), а не tool use                             | У Opus 5.5 / Sonnet 5.5 принудительный `tool_choice` даёт 400; structured outputs гарантируют JSON, Zod проверяет смысловые ограничения, до 2 повторов с текстом ошибок  |
+| Thinking не передаём, `effort` — по агенту                                             | У Opus 5.5 thinking нельзя выключить (400), управление глубиной — через effort (по умолчанию medium)                                                                     |
+| `fallbacks: "default"` при отказе модели (LLM_REFUSAL_FALLBACK)                        | Рекомендация Anthropic; стоимость считается по `usage.iterations` — каждая попытка по цене своей модели                                                                  |
+| Ретраи HTTP — SDK, ретраи задач — pg-boss                                              | SDK сам повторяет 408/409/429/5xx с backoff; после исчерпания ошибка классифицируется: временная → pg-boss повторит задачу с экспоненциальным backoff, затем dead-letter |
+| Резерв бюджета до вызова (worst case) под advisory lock                                | Параллельные вызовы не могут вместе превысить лимит; пауза наступает, когда _следующий_ вызов может выйти за 100%                                                        |
+| Пауза — флаг на задаче, а не статус                                                    | После подтверждения задача продолжается с того же места                                                                                                                  |
+| DB-триггеры: смена статуса только через transitionTask, audit_log только на добавление | Правило держится даже при ошибке в коде                                                                                                                                  |
+| Пакет `engine` отдельно от `core`                                                      | `core` без зависимостей от БД — его смогут импортировать бот и веб                                                                                                       |
+| Цены моделей в `config/model-pricing.json`                                             | Цены меняются чаще релизов; неизвестная модель считается по самым дорогим ценам с пометкой estimated                                                                     |
+| Часовой пояс бюджета `APP_TIMEZONE` (по умолчанию Europe/Moscow)                       | «Сутки» должны совпадать с днём владельца, а не с UTC                                                                                                                    |
 
 ## Ответы владельца (зафиксировано)
 
