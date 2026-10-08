@@ -1,0 +1,39 @@
+{
+  "name": "content-agents",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build",
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "db:generate": "pnpm --filter @cms/db generate",
+    "db:migrate": "pnpm --filter @cms/db migrate",
+    "db:rollback": "pnpm --filter @cms/db rollback",
+    "db:status": "pnpm --filter @cms/db status",
+    "dev:api": "pnpm --filter @cms/api dev",
+    "start:api": "pnpm --filter @cms/api start"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}

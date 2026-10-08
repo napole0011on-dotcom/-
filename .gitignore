@@ -1,0 +1,21 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# deps & build
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# runtime data
+data/
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

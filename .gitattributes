@@ -1,0 +1,6 @@
+# Force LF everywhere so scripts and SQL behave the same on Windows and Linux.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
