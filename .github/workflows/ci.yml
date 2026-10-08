@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_USER: content
+      POSTGRES_PASSWORD: ci-only-password
+      POSTGRES_DB: content
+      STORAGE_DRIVER: s3
+      S3_ENDPOINT: http://localhost:8333
+      S3_BUCKET: content
+      S3_ACCESS_KEY_ID: ci-only-key
+      S3_SECRET_ACCESS_KEY: ci-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: docker compose up -d --wait
+      - run: pnpm db:migrate
+      - run: pnpm db:rollback
+      - run: pnpm db:migrate
+      - run: pnpm test:integration
+      - run: pnpm build
+
+  # Catches bash-only scripts, path separator and line-ending problems.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm clean
