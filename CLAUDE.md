@@ -9,8 +9,8 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 | Этап                                                    | Статус                     |
 | ------------------------------------------------------- | -------------------------- |
 | 0. Каркас                                               | готово                     |
-| 1. Ядро (модели, автомат статусов, очередь, LLM-клиент) | готово, ждёт подтверждения |
-| 2. Copywriter + Critic + CEO + Telegram-гейты           | не начат                   |
+| 1. Ядро (модели, автомат статусов, очередь, LLM-клиент) | готово                     |
+| 2. Copywriter + Critic + CEO + Telegram-гейты           | готово, ждёт подтверждения |
 | 3. Image (Magnific), Video Ideas, SEO, DAG              | не начат                   |
 | 4. Instagram Analyst (CSV → Graph API)                  | не начат                   |
 | 5. Панель, эксплуатация, деплой                         | не начат                   |
@@ -27,6 +27,18 @@ React + Vite, sharp.
 
 ```
 apps/api            Fastify HTTP API (пока только /health)
+apps/bot            Telegram-бот + воркер очереди + обслуживание в одном процессе (pnpm dev:bot)
+  src/bot.ts           белый список, команды, кнопки, ввод комментариев (ForceReply)
+  src/callbacks.ts     формат callback_data (≤ 64 байт)
+  src/telegram-channel.ts, format.ts  сообщения гейтов (HTML, ≤ 4096 символов)
+  src/smoke.ts         pnpm smoke:llm — первый реальный вызов с лимитом $0.02
+packages/agents     агенты и сценарий
+  prompts/*.md         системные промпты (front matter version: N); ai-cliches.ru.txt — штампы
+  src/agents/          ceo, copywriter, critic — вход/выход по Zod, без побочных эффектов
+  src/workflow.ts      оркестратор: бриф → план → гейт 1 → copy⇄critic → гейт 2 → правки → экспорт
+  src/schemas.ts       схемы и правила площадок; src/lint.ts — детерминированный поиск штампов
+  src/mock-llm.ts      LLM_PROVIDER=mock: правдоподобные ответы без API
+config/brands/default.yaml  профиль бренда по умолчанию (/brand reload в боте)
 packages/core       конфиг (Zod-валидация env), логгер (pino с редактированием секретов)
 packages/db         Drizzle-схема, клиент, раннер миграций с откатом, CLI
 packages/db/migrations  NNNN_name.sql (drizzle-kit) + NNNN_name.down.sql (вручную, обязателен)
@@ -43,8 +55,7 @@ config/model-pricing.json  цены моделей (USD за 1M токенов) 
 scripts/            кроссплатформенные node-скрипты (никакого bash)
 ```
 
-Ещё не созданы (появятся на своих этапах): `apps/bot` и процесс-воркер (этап 2), `apps/web` (этап 5),
-`packages/agents` (этап 2).
+Ещё не созданы (появятся на своих этапах): `apps/web` (этап 5).
 
 ## Команды (работают одинаково в PowerShell, cmd и bash)
 
@@ -65,6 +76,8 @@ pnpm test                # unit, без внешних сервисов
 pnpm test:integration    # нужен pnpm infra:up
 pnpm check               # всё сразу (lint, typecheck, unit, integration, build)
 pnpm demo:core           # демо ядра во временной БД с фейковым LLM (нужен pnpm infra:up)
+pnpm dev:bot             # бот + воркер (нужны TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID)
+pnpm smoke:llm           # один реальный вызов Claude с лимитом $0.02, печатает фактическую стоимость
 ```
 
 ## Правила кода
@@ -89,6 +102,10 @@ pnpm demo:core           # демо ядра во временной БД с ф�
 - Ошибки: `TransientError` (повтор), `PermanentError` (сразу fail), `BudgetExceededError` (пауза).
 - `drizzle-orm` импортировать только из `@cms/db` (`sql`, `eq`, `and`) — иначе две копии пакета ломают типы.
 - В тестах ошибки Postgres лежат в `err.cause` (drizzle их оборачивает).
+- Промпт поменял — подними `version` в front matter; хэш содержимого всё равно попадёт в версию (`copywriter@1#a1b2c3d4`).
+- Агент возвращает только данные. Статусы, артефакты, сообщения владельцу — только в `workflow.ts`.
+- Каждый шаг рана идемпотентен: LLM-вызовы, версии артефактов и сообщения — через ключи от `run.id`.
+- Структурные ограничения схем (`enum`, `minItems`) SDK переносит в описание, API их не гарантирует — проверяет Zod.
 
 ## Принятые решения
 
