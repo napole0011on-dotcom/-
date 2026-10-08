@@ -1,0 +1,28 @@
+{
+  "name": "@cms/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@cms/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "@cms/core": "workspace:*",
+    "@cms/db": "workspace:*",
+    "@cms/providers": "workspace:*",
+    "pg": "^8.23.1",
+    "pg-boss": "^12.37.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  },
+  "scripts": {
+    "demo": "tsx --conditions=@cms/source src/demo.ts"
+  }
+}
