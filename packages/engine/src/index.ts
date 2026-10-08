@@ -7,3 +7,4 @@ export * from './transitions.js';
 export * from './llm/client.js';
 export * from './llm/external-data.js';
 export * from './llm/transport.js';
+export * from './artifacts.js';

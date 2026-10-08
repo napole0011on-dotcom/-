@@ -8,7 +8,7 @@ import {
   type AppConfig,
   type Logger,
 } from '@cms/core';
-import type { Notifier } from '@cms/providers';
+import type { Notifier, NotifierButton } from '@cms/providers';
 import { scopeLabel } from './budget.js';
 import {
   claimRun,
@@ -43,6 +43,8 @@ export interface RunDeps {
   notifier: Notifier;
   logger: Logger;
   staleAfterSeconds: number;
+  /** Buttons for the budget-pause message (e.g. "+$1 and continue"); provided by the UI layer. */
+  pauseButtons?: (taskId: string) => NotifierButton[][];
 }
 
 export type RunOutcome = 'succeeded' | 'skipped' | 'paused' | 'failed' | 'retry';
@@ -108,6 +110,7 @@ export async function processRun(
             `Задача на паузе: исчерпан бюджет (${scopeLabel(err.scope)}). ` +
             `Лимит $${err.limitUsd.toFixed(2)}, потрачено $${err.spentUsd.toFixed(2)}, ` +
             `нужно ещё до $${err.requestedUsd.toFixed(2)}. Продолжу только после вашего подтверждения.`,
+          ...(deps.pauseButtons ? { buttons: deps.pauseButtons(run.taskId) } : {}),
         });
       }
       log.warn({ err: errorToJson(err) }, 'run paused: budget exceeded');

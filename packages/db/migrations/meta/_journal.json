@@ -15,6 +15,13 @@
       "when": 1791499489312,
       "tag": "0001_core_models",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791501147603,
+      "tag": "0002_approval_choice",
+      "breakpoints": true
     }
   ]
 }

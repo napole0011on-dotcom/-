@@ -152,6 +152,8 @@ export const approvals = pgTable(
     artifactVersion: integer('artifact_version'),
     decision: approvalDecision('decision').notNull(),
     comment: text('comment'),
+    /** Which variant (1-3) the owner picked when approving copy; null = all / not applicable. */
+    choice: integer('choice'),
     decidedBy: text('decided_by').notNull(),
     /** e.g. Telegram callback id: pressing the button twice records one decision. */
     idempotencyKey: text('idempotency_key').notNull().unique(),

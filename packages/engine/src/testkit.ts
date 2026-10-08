@@ -96,6 +96,7 @@ export function budgetCtx(overrides: Partial<BudgetConfig> = {}, now?: () => Dat
 
 export function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
   return {
+    provider: 'anthropic',
     apiKey: 'test',
     models: {
       ceo: 'claude-opus-5-5',
