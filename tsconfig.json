@@ -14,7 +14,13 @@
       "path": "packages/engine"
     },
     {
+      "path": "packages/agents"
+    },
+    {
       "path": "apps/api"
+    },
+    {
+      "path": "apps/bot"
     }
   ]
 }

@@ -24,7 +24,10 @@
     "db:status": "pnpm --filter @cms/db status",
     "dev:api": "pnpm --filter @cms/api dev",
     "start:api": "pnpm --filter @cms/api start",
-    "demo:core": "pnpm --filter @cms/engine demo"
+    "demo:core": "pnpm --filter @cms/engine demo",
+    "dev:bot": "pnpm --filter @cms/bot dev",
+    "start:bot": "pnpm --filter @cms/bot start",
+    "smoke:llm": "pnpm --filter @cms/bot smoke"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,0 +1,20 @@
+{
+  "name": "@cms/bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cms/agents": "workspace:*",
+    "@cms/core": "workspace:*",
+    "@cms/db": "workspace:*",
+    "@cms/engine": "workspace:*",
+    "@cms/providers": "workspace:*",
+    "grammy": "^1.46.0",
+    "zod": "^4.6.5"
+  },
+  "scripts": {
+    "dev": "tsx watch --conditions=@cms/source src/main.ts",
+    "start": "node dist/main.js",
+    "smoke": "tsx --conditions=@cms/source src/smoke.ts"
+  }
+}
