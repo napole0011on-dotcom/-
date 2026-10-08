@@ -1,0 +1,18 @@
+DROP TABLE IF EXISTS "approvals";
+DROP TABLE IF EXISTS "llm_calls";
+DROP TABLE IF EXISTS "cost_records";
+DROP TABLE IF EXISTS "budget_overrides";
+DROP TABLE IF EXISTS "artifacts";
+DROP TABLE IF EXISTS "runs";
+DROP TABLE IF EXISTS "audit_log";
+DROP TABLE IF EXISTS "tasks";
+DROP TABLE IF EXISTS "idempotency_keys";
+DROP FUNCTION IF EXISTS guard_task_status_change();
+DROP FUNCTION IF EXISTS forbid_audit_log_mutation();
+DROP TYPE IF EXISTS "approval_decision";
+DROP TYPE IF EXISTS "approval_gate";
+DROP TYPE IF EXISTS "cost_status";
+DROP TYPE IF EXISTS "run_status";
+DROP TYPE IF EXISTS "task_status";
+ALTER TABLE "brands" DROP COLUMN IF EXISTS "profile_version";
+ALTER TABLE "brands" DROP COLUMN IF EXISTS "profile";

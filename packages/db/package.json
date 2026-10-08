@@ -11,7 +11,7 @@
     }
   },
   "scripts": {
-    "generate": "drizzle-kit generate",
+    "generate": "tsc -b ../core && drizzle-kit generate",
     "migrate": "tsx --conditions=@cms/source src/cli.ts up",
     "rollback": "tsx --conditions=@cms/source src/cli.ts down",
     "status": "tsx --conditions=@cms/source src/cli.ts status"
