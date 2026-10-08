@@ -1,0 +1,16 @@
+{
+  "name": "@cms/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --conditions=@cms/source src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@cms/core": "workspace:*",
+    "@cms/db": "workspace:*",
+    "@cms/providers": "workspace:*",
+    "fastify": "^5.12.5"
+  }
+}
