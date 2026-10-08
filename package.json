@@ -23,7 +23,8 @@
     "db:rollback": "pnpm --filter @cms/db rollback",
     "db:status": "pnpm --filter @cms/db status",
     "dev:api": "pnpm --filter @cms/api dev",
-    "start:api": "pnpm --filter @cms/api start"
+    "start:api": "pnpm --filter @cms/api start",
+    "demo:core": "pnpm --filter @cms/engine demo"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
