@@ -1,0 +1,17 @@
+{
+  "name": "@cms/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@cms/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  }
+}
