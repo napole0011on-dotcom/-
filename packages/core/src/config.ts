@@ -61,6 +61,8 @@ const envSchema = z
     // Time zone used for "per day" / "per month" budgets and reminders.
     APP_TIMEZONE: timezone.default('Europe/Moscow'),
 
+    // mock = canned answers, no API calls (default). anthropic = real Claude API.
+    LLM_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
     LLM_MODEL_CEO: z.string().min(1).default('claude-opus-5-5'),
     LLM_MODEL_CRITIC: z.string().min(1).default('claude-opus-5-5'),
@@ -82,6 +84,13 @@ const envSchema = z
     QUEUE_JOB_TIMEOUT_SECONDS: positiveInt.default(900),
     RUN_STALE_AFTER_SECONDS: positiveInt.default(900),
     APPROVAL_REMINDER_HOURS: positiveInt.default(12),
+
+    TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+    // Only this Telegram user id may talk to the bot; everyone else is ignored.
+    TELEGRAM_OWNER_ID: z.coerce.number().int().positive().optional(),
+
+    BRAND_PROFILE_FILE: z.string().min(1).default('config/brands/default.yaml'),
+    EXPORT_DIR: z.string().min(1).default('data/exports'),
   })
   .superRefine((env, ctx) => {
     if (env.STORAGE_DRIVER === 's3') {
@@ -100,11 +109,11 @@ const envSchema = z
         }
       }
     }
-    if (env.PROVIDERS_MODE === 'real' && !env.ANTHROPIC_API_KEY) {
+    if (env.LLM_PROVIDER === 'anthropic' && !env.ANTHROPIC_API_KEY) {
       ctx.addIssue({
         code: 'custom',
         path: ['ANTHROPIC_API_KEY'],
-        message: 'is required when PROVIDERS_MODE=real',
+        message: 'is required when LLM_PROVIDER=anthropic',
       });
     }
     if (env.PUBLISH_ENABLED && env.DRY_RUN) {
@@ -144,9 +153,13 @@ export interface AppConfig {
   budget: BudgetConfig;
   queue: QueueConfig;
   approvalReminderHours: number;
+  telegram: { botToken: string | undefined; ownerId: number | undefined };
+  brandProfileFile: string;
+  exportDir: string;
 }
 
 export interface LlmConfig {
+  provider: 'mock' | 'anthropic';
   apiKey: string | undefined;
   models: { ceo: string; critic: string; worker: string; classifier: string };
   timeoutMs: number;
@@ -230,6 +243,7 @@ export function loadConfig(
     api: { host: e.API_HOST, port: e.API_PORT },
     timezone: e.APP_TIMEZONE,
     llm: {
+      provider: e.LLM_PROVIDER,
       apiKey: e.ANTHROPIC_API_KEY,
       models: {
         ceo: e.LLM_MODEL_CEO,
@@ -256,7 +270,21 @@ export function loadConfig(
       runStaleAfterSeconds: e.RUN_STALE_AFTER_SECONDS,
     },
     approvalReminderHours: e.APPROVAL_REMINDER_HOURS,
+    telegram: { botToken: e.TELEGRAM_BOT_TOKEN, ownerId: e.TELEGRAM_OWNER_ID },
+    brandProfileFile: path.resolve(rootDir, e.BRAND_PROFILE_FILE),
+    exportDir: path.resolve(rootDir, e.EXPORT_DIR),
   };
+}
+
+/** The bot cannot start without these; reported like any other config error. */
+export function requireTelegram(config: AppConfig): { botToken: string; ownerId: number } {
+  const problems: string[] = [];
+  if (!config.telegram.botToken)
+    problems.push('TELEGRAM_BOT_TOKEN: is required to run the bot (token from @BotFather)');
+  if (!config.telegram.ownerId)
+    problems.push('TELEGRAM_OWNER_ID: is required to run the bot (your numeric Telegram user id)');
+  if (problems.length > 0) throw new ConfigError(problems);
+  return { botToken: config.telegram.botToken!, ownerId: config.telegram.ownerId! };
 }
 
 /** Summary safe to log: secrets are replaced with a presence marker. */
@@ -283,6 +311,12 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
     budget: config.budget,
     queue: config.queue,
     approvalReminderHours: config.approvalReminderHours,
+    telegram: {
+      botToken: config.telegram.botToken ? '***set***' : '***missing***',
+      ownerId: config.telegram.ownerId ? '***set***' : '***missing***',
+    },
+    brandProfileFile: config.brandProfileFile,
+    exportDir: config.exportDir,
   };
 }
 

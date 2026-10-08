@@ -19,6 +19,7 @@ const SECRET_KEYS = [
   'authorization',
   'cookie',
   'connectionString',
+  'botToken',
 ];
 
 export const REDACT_PATHS = SECRET_KEYS.flatMap((k) => [k, `*.${k}`, `*.*.${k}`]).concat([

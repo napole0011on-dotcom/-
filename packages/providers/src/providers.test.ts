@@ -65,11 +65,9 @@ describe('createProviders', () => {
   });
 
   it('fails loudly for real mode instead of silently using mocks', () => {
-    expect(() =>
-      createProviders(
-        loadConfig({ ...env, PROVIDERS_MODE: 'real', ANTHROPIC_API_KEY: 'k' }, '/repo'),
-      ),
-    ).toThrow(/not implemented/);
+    expect(() => createProviders(loadConfig({ ...env, PROVIDERS_MODE: 'real' }, '/repo'))).toThrow(
+      /not implemented/,
+    );
   });
 });
 

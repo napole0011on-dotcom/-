@@ -100,7 +100,7 @@ describe('loadConfig', () => {
       classifier: 'claude-haiku-5-5',
     });
     expect(c.budget).toMatchObject({ dailyUsd: 5, monthlyUsd: 50, warnRatio: 0.8 });
-    const err = errorOf(() => loadConfig({ ...base, PROVIDERS_MODE: 'real' }, '/repo'));
+    const err = errorOf(() => loadConfig({ ...base, LLM_PROVIDER: 'anthropic' }, '/repo'));
     expect(err.problems.map((p) => p.split(':')[0])).toContain('ANTHROPIC_API_KEY');
   });
 
@@ -110,5 +110,24 @@ describe('loadConfig', () => {
     ).toMatch(/^APP_TIMEZONE:/);
     const c = loadConfig({ ...base, ANTHROPIC_API_KEY: 'sk-ant-secret-value' }, '/repo');
     expect(JSON.stringify(describeConfig(c))).not.toContain('sk-ant-secret-value');
+  });
+
+  it('telegram settings: optional for the API, required (with names) for the bot', async () => {
+    const { requireTelegram } = await import('./config.js');
+    const c = loadConfig(base, '/repo');
+    const err = errorOf(() => requireTelegram(c));
+    expect(err.problems.map((p) => p.split(':')[0])).toEqual([
+      'TELEGRAM_BOT_TOKEN',
+      'TELEGRAM_OWNER_ID',
+    ]);
+    const ok = loadConfig(
+      { ...base, TELEGRAM_BOT_TOKEN: '123:abc-secret', TELEGRAM_OWNER_ID: '42' },
+      '/repo',
+    );
+    expect(requireTelegram(ok)).toEqual({ botToken: '123:abc-secret', ownerId: 42 });
+    expect(JSON.stringify(describeConfig(ok))).not.toContain('abc-secret');
+    expect(
+      errorOf(() => loadConfig({ ...base, TELEGRAM_OWNER_ID: '@me' }, '/repo')).problems[0],
+    ).toMatch(/^TELEGRAM_OWNER_ID:/);
   });
 });
