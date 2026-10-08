@@ -9,6 +9,19 @@ import { z } from 'zod';
 
 const port = z.coerce.number().int().min(1).max(65535);
 const bool = z.stringbool();
+const positiveInt = z.coerce.number().int().positive();
+const usd = z.coerce.number().nonnegative();
+const timezone = z.string().refine(
+  (tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { error: 'must be an IANA time zone, e.g. Europe/Moscow' },
+);
 const requiredString = (hint: string) =>
   z
     .string({ error: (iss) => (iss.input === undefined ? `is required (${hint})` : undefined) })
@@ -44,6 +57,31 @@ const envSchema = z
 
     API_HOST: z.string().min(1).default('127.0.0.1'),
     API_PORT: port.default(3000),
+
+    // Time zone used for "per day" / "per month" budgets and reminders.
+    APP_TIMEZONE: timezone.default('Europe/Moscow'),
+
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    LLM_MODEL_CEO: z.string().min(1).default('claude-opus-5-5'),
+    LLM_MODEL_CRITIC: z.string().min(1).default('claude-opus-5-5'),
+    LLM_MODEL_WORKER: z.string().min(1).default('claude-sonnet-5-5'),
+    LLM_MODEL_CLASSIFIER: z.string().min(1).default('claude-haiku-5-5'),
+    LLM_TIMEOUT_MS: positiveInt.default(180_000),
+    LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(3),
+    LLM_STORE_FULL_TEXT: bool.default(true),
+    LLM_REFUSAL_FALLBACK: bool.default(true),
+    MODEL_PRICING_FILE: z.string().min(1).default('config/model-pricing.json'),
+
+    BUDGET_DAILY_USD: usd.default(5),
+    BUDGET_MONTHLY_USD: usd.default(50),
+    BUDGET_TASK_USD: usd.default(2),
+    BUDGET_WARN_RATIO: z.coerce.number().gt(0).lt(1).default(0.8),
+
+    QUEUE_RETRY_LIMIT: z.coerce.number().int().min(0).max(20).default(3),
+    QUEUE_RETRY_DELAY_SECONDS: positiveInt.default(30),
+    QUEUE_JOB_TIMEOUT_SECONDS: positiveInt.default(900),
+    RUN_STALE_AFTER_SECONDS: positiveInt.default(900),
+    APPROVAL_REMINDER_HOURS: positiveInt.default(12),
   })
   .superRefine((env, ctx) => {
     if (env.STORAGE_DRIVER === 's3') {
@@ -61,6 +99,13 @@ const envSchema = z
           });
         }
       }
+    }
+    if (env.PROVIDERS_MODE === 'real' && !env.ANTHROPIC_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ANTHROPIC_API_KEY'],
+        message: 'is required when PROVIDERS_MODE=real',
+      });
     }
     if (env.PUBLISH_ENABLED && env.DRY_RUN) {
       ctx.addIssue({
@@ -94,6 +139,35 @@ export interface AppConfig {
   dryRun: boolean;
   publishEnabled: boolean;
   api: { host: string; port: number };
+  timezone: string;
+  llm: LlmConfig;
+  budget: BudgetConfig;
+  queue: QueueConfig;
+  approvalReminderHours: number;
+}
+
+export interface LlmConfig {
+  apiKey: string | undefined;
+  models: { ceo: string; critic: string; worker: string; classifier: string };
+  timeoutMs: number;
+  maxRetries: number;
+  storeFullText: boolean;
+  refusalFallback: boolean;
+  pricingFile: string;
+}
+
+export interface BudgetConfig {
+  dailyUsd: number;
+  monthlyUsd: number;
+  taskUsd: number;
+  warnRatio: number;
+}
+
+export interface QueueConfig {
+  retryLimit: number;
+  retryDelaySeconds: number;
+  jobTimeoutSeconds: number;
+  runStaleAfterSeconds: number;
 }
 
 export class ConfigError extends Error {
@@ -154,6 +228,34 @@ export function loadConfig(
     dryRun: e.DRY_RUN,
     publishEnabled: e.PUBLISH_ENABLED,
     api: { host: e.API_HOST, port: e.API_PORT },
+    timezone: e.APP_TIMEZONE,
+    llm: {
+      apiKey: e.ANTHROPIC_API_KEY,
+      models: {
+        ceo: e.LLM_MODEL_CEO,
+        critic: e.LLM_MODEL_CRITIC,
+        worker: e.LLM_MODEL_WORKER,
+        classifier: e.LLM_MODEL_CLASSIFIER,
+      },
+      timeoutMs: e.LLM_TIMEOUT_MS,
+      maxRetries: e.LLM_MAX_RETRIES,
+      storeFullText: e.LLM_STORE_FULL_TEXT,
+      refusalFallback: e.LLM_REFUSAL_FALLBACK,
+      pricingFile: path.resolve(rootDir, e.MODEL_PRICING_FILE),
+    },
+    budget: {
+      dailyUsd: e.BUDGET_DAILY_USD,
+      monthlyUsd: e.BUDGET_MONTHLY_USD,
+      taskUsd: e.BUDGET_TASK_USD,
+      warnRatio: e.BUDGET_WARN_RATIO,
+    },
+    queue: {
+      retryLimit: e.QUEUE_RETRY_LIMIT,
+      retryDelaySeconds: e.QUEUE_RETRY_DELAY_SECONDS,
+      jobTimeoutSeconds: e.QUEUE_JOB_TIMEOUT_SECONDS,
+      runStaleAfterSeconds: e.RUN_STALE_AFTER_SECONDS,
+    },
+    approvalReminderHours: e.APPROVAL_REMINDER_HOURS,
   };
 }
 
@@ -176,6 +278,11 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
     dryRun: config.dryRun,
     publishEnabled: config.publishEnabled,
     api: config.api,
+    timezone: config.timezone,
+    llm: { ...config.llm, apiKey: config.llm.apiKey ? '***set***' : '***missing***' },
+    budget: config.budget,
+    queue: config.queue,
+    approvalReminderHours: config.approvalReminderHours,
   };
 }
 

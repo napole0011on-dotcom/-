@@ -90,4 +90,25 @@ describe('loadConfig', () => {
       expect(text).not.toContain(secret);
     }
   });
+
+  it('requires ANTHROPIC_API_KEY only in real mode and defaults models/budgets', () => {
+    const c = loadConfig(base, '/repo');
+    expect(c.llm.models).toEqual({
+      ceo: 'claude-opus-5-5',
+      critic: 'claude-opus-5-5',
+      worker: 'claude-sonnet-5-5',
+      classifier: 'claude-haiku-5-5',
+    });
+    expect(c.budget).toMatchObject({ dailyUsd: 5, monthlyUsd: 50, warnRatio: 0.8 });
+    const err = errorOf(() => loadConfig({ ...base, PROVIDERS_MODE: 'real' }, '/repo'));
+    expect(err.problems.map((p) => p.split(':')[0])).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('validates the time zone and masks the API key', () => {
+    expect(
+      errorOf(() => loadConfig({ ...base, APP_TIMEZONE: 'Mars/Base' }, '/repo')).problems[0],
+    ).toMatch(/^APP_TIMEZONE:/);
+    const c = loadConfig({ ...base, ANTHROPIC_API_KEY: 'sk-ant-secret-value' }, '/repo');
+    expect(JSON.stringify(describeConfig(c))).not.toContain('sk-ant-secret-value');
+  });
 });
