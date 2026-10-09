@@ -12,5 +12,6 @@
     "apps/*/src/**/*.ts",
     "packages/*/drizzle.config.ts",
     "vitest.config.ts"
-  ]
+  ],
+  "exclude": ["apps/web/**"]
 }

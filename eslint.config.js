@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
@@ -10,7 +11,7 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
       parserOptions: {
-        project: ['./tsconfig.typecheck.json'],
+        project: ['./tsconfig.typecheck.json', './apps/web/tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -19,6 +20,11 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'error',
       'no-console': 'error',
     },
+  },
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    ...reactHooks.configs.flat.recommended,
+    languageOptions: { globals: globals.browser },
   },
   {
     files: ['**/*.js', '**/*.mjs'],
