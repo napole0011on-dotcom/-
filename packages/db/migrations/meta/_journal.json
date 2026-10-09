@@ -29,6 +29,13 @@
       "when": 1791536595402,
       "tag": "0003_wallet_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791549991275,
+      "tag": "0004_panel_and_invocations",
+      "breakpoints": true
     }
   ]
 }

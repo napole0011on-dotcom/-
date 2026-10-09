@@ -308,3 +308,57 @@ export const walletSnapshots = pgTable(
   },
   (t) => [index('wallet_snapshots_lookup_idx').on(t.brandId, t.provider, t.createdAt)],
 );
+
+export const invocationStatus = pgEnum('invocation_status', [
+  'running',
+  'succeeded',
+  'failed',
+  'waiting',
+]);
+
+/**
+ * One call of one agent (CEO, Copywriter, Critic, ...), possibly several inside one run.
+ * Agent cards in the panel are built from these rows.
+ */
+export const agentInvocations = pgTable(
+  'agent_invocations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    agent: text('agent').notNull(),
+    taskId: uuid('task_id').references(() => tasks.id),
+    runId: uuid('run_id').references(() => runs.id),
+    status: invocationStatus('status').notNull().default('running'),
+    /** Prompt version the result was produced with, e.g. "copywriter@4#a1b2c3d4". */
+    promptVersion: text('prompt_version').notNull(),
+    model: text('model').notNull(),
+    costUsd: usd('cost_usd').notNull().default('0'),
+    latencyMs: integer('latency_ms'),
+    error: jsonb('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('agent_invocations_agent_started_idx').on(t.agent, t.startedAt),
+    index('agent_invocations_run_idx').on(t.runId),
+  ],
+);
+
+/** Web panel sessions. Only a SHA-256 of the session token is stored. */
+export const panelSessions = pgTable('panel_sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  csrfToken: text('csrf_token').notNull(),
+  createdAt: createdAt(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+/** Single-row login throttle (one owner): consecutive failures and lock deadline. */
+export const panelLoginState = pgTable('panel_login_state', {
+  id: integer('id').primaryKey(),
+  failedCount: integer('failed_count').notNull().default(0),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  updatedAt: updatedAt(),
+});

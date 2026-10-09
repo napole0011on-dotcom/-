@@ -50,7 +50,8 @@ const TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   // Undo of an approval is allowed while nothing is published.
   approved: ['exported', 'published', 'awaiting_final_approval', 'failed'],
   rejected: ['awaiting_final_approval', 'cancelled'],
-  exported: ['published', 'awaiting_final_approval'],
+  // Once exported, the decision is final: no way back to the approval gate.
+  exported: ['published'],
   published: [],
   // A failed task can be retried by a human.
   failed: ['in_progress', 'cancelled'],
@@ -69,7 +70,6 @@ const HUMAN_ONLY: ReadonlySet<string> = new Set([
   'awaiting_final_approval->revision',
   'approved->awaiting_final_approval',
   'rejected->awaiting_final_approval',
-  'exported->awaiting_final_approval',
   'approved->published',
   'exported->published',
   'failed->in_progress',

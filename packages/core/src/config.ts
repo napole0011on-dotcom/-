@@ -55,7 +55,12 @@ const envSchema = z
     DRY_RUN: bool.default(true),
     PUBLISH_ENABLED: bool.default(false),
 
-    API_HOST: z.string().min(1).default('127.0.0.1'),
+    // The panel API must never listen on a public interface.
+    API_HOST: z
+      .enum(['127.0.0.1', 'localhost', '::1'], {
+        error: 'must be a loopback address (127.0.0.1, localhost or ::1)',
+      })
+      .default('127.0.0.1'),
     API_PORT: port.default(3000),
 
     // Time zone used for "per day" / "per month" budgets and reminders.
@@ -101,6 +106,18 @@ const envSchema = z
     QUEUE_JOB_TIMEOUT_SECONDS: positiveInt.default(900),
     RUN_STALE_AFTER_SECONDS: positiveInt.default(900),
     APPROVAL_REMINDER_HOURS: positiveInt.default(12),
+
+    // Web panel login. Only the scrypt hash is stored (pnpm panel:password prints it).
+    PANEL_PASSWORD_HASH: z
+      .string()
+      .regex(/^scrypt:\d+:\d+:\d+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/, {
+        error: 'must be the output of pnpm panel:password (scrypt:N:r:p:salt:hash)',
+      })
+      .optional(),
+    PANEL_SESSION_IDLE_MINUTES: positiveInt.default(30),
+    PANEL_SESSION_MAX_HOURS: positiveInt.default(12),
+    PANEL_LOGIN_MAX_ATTEMPTS: positiveInt.default(5),
+    PANEL_LOGIN_LOCK_MINUTES: positiveInt.default(5),
 
     TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
     // Only this Telegram user id may talk to the bot; everyone else is ignored.
@@ -181,8 +198,17 @@ export interface AppConfig {
   queue: QueueConfig;
   approvalReminderHours: number;
   telegram: { botToken: string | undefined; ownerId: number | undefined };
+  panel: PanelConfig;
   brandProfileFile: string;
   exportDir: string;
+}
+
+export interface PanelConfig {
+  passwordHash: string | undefined;
+  sessionIdleMinutes: number;
+  sessionMaxHours: number;
+  loginMaxAttempts: number;
+  loginLockMinutes: number;
 }
 
 export interface LlmConfig {
@@ -316,6 +342,13 @@ export function loadConfig(
     },
     approvalReminderHours: e.APPROVAL_REMINDER_HOURS,
     telegram: { botToken: e.TELEGRAM_BOT_TOKEN, ownerId: e.TELEGRAM_OWNER_ID },
+    panel: {
+      passwordHash: e.PANEL_PASSWORD_HASH,
+      sessionIdleMinutes: e.PANEL_SESSION_IDLE_MINUTES,
+      sessionMaxHours: e.PANEL_SESSION_MAX_HOURS,
+      loginMaxAttempts: e.PANEL_LOGIN_MAX_ATTEMPTS,
+      loginLockMinutes: e.PANEL_LOGIN_LOCK_MINUTES,
+    },
     brandProfileFile: path.resolve(rootDir, e.BRAND_PROFILE_FILE),
     exportDir: path.resolve(rootDir, e.EXPORT_DIR),
   };
@@ -362,7 +395,21 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
     },
     brandProfileFile: config.brandProfileFile,
     exportDir: config.exportDir,
+    panel: {
+      ...config.panel,
+      passwordHash: config.panel.passwordHash ? '***set***' : '***missing***',
+    },
   };
+}
+
+/** The panel API refuses to start without a password hash. */
+export function requirePanel(config: AppConfig): { passwordHash: string } {
+  if (!config.panel.passwordHash) {
+    throw new ConfigError([
+      'PANEL_PASSWORD_HASH: is required for the web panel (run pnpm panel:password and paste the hash into .env)',
+    ]);
+  }
+  return { passwordHash: config.panel.passwordHash };
 }
 
 /** Walks up from cwd to the directory containing pnpm-workspace.yaml. */
