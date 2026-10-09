@@ -21,6 +21,12 @@ const modelPrice = rates.extend({
 const pricingFile = z.object({
   currency: z.literal('USD'),
   verifiedAt: z.string(),
+  /**
+   * Rates for a model that is not listed. Needed when the list could make the "most
+   * expensive known model" cheap (e.g. a file with only free models): an unknown model
+   * must never be priced at zero.
+   */
+  unknownModelRates: rates.optional(),
   models: z.record(z.string(), modelPrice).refine((m) => Object.keys(m).length > 0, {
     error: 'at least one model is required',
   }),
@@ -59,9 +65,10 @@ export interface CostResult {
 }
 
 function mostExpensive(pricing: ModelPricing): Rates {
-  const all = Object.values(pricing.models).flatMap((m) =>
+  const all: Rates[] = Object.values(pricing.models).flatMap((m) =>
     m.longContext ? [m, m.longContext] : [m],
   );
+  if (pricing.unknownModelRates) all.push(pricing.unknownModelRates);
   const max = (k: keyof Rates) => Math.max(...all.map((r) => r[k]));
   return {
     input: max('input'),
@@ -120,4 +127,9 @@ export function estimateMaxLlmCost(
     cacheWrite5mTokens: 0,
     cacheWrite1hTokens: promptTokensEstimate,
   }).usd;
+}
+
+/** Configured models missing from the price list (they are priced as unknown, i.e. expensive). */
+export function unpricedModels(pricing: ModelPricing, models: string[]): string[] {
+  return [...new Set(models)].filter((m) => !pricing.models[m]);
 }

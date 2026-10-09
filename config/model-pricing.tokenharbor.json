@@ -1,0 +1,26 @@
+{
+  "currency": "USD",
+  "unit": "per 1M tokens",
+  "verifiedAt": "2026-10-09",
+  "source": "Token Harbor model catalog as reported by the owner; gateway docs were not reachable from the build environment",
+  "notes": [
+    "TODO: claude-haiku-5.5:free is free for a LIMITED TIME (gateway docs). When it stops being free or you switch models, add the real gateway prices here.",
+    "TODO(verify): gateway prices for paid models; until added, unknown models are priced at unknownModelRates (deliberately expensive)."
+  ],
+  "unknownModelRates": {
+    "input": 10,
+    "output": 50,
+    "cacheRead": 1,
+    "cacheWrite5m": 12.5,
+    "cacheWrite1h": 20
+  },
+  "models": {
+    "claude-haiku-5.5:free": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite5m": 0,
+      "cacheWrite1h": 0
+    }
+  }
+}

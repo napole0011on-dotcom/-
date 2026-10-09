@@ -1,7 +1,13 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findRepoRoot } from './config.js';
-import { computeLlmCost, estimateMaxLlmCost, loadPricing, parsePricing } from './pricing.js';
+import {
+  computeLlmCost,
+  estimateMaxLlmCost,
+  loadPricing,
+  parsePricing,
+  unpricedModels,
+} from './pricing.js';
 
 const pricing = loadPricing(path.join(findRepoRoot(), 'config', 'model-pricing.json'));
 const usage = (u: Partial<Parameters<typeof computeLlmCost>[2]>) => ({
@@ -68,5 +74,15 @@ describe('pricing', () => {
   it('rejects a malformed pricing file', () => {
     expect(() => parsePricing({ currency: 'USD', verifiedAt: 'x', models: {} })).toThrow();
     expect(() => parsePricing({ currency: 'EUR', verifiedAt: 'x', models: { a: {} } })).toThrow();
+  });
+
+  it('gateway price list: the free model costs 0 and is known; unknown models are expensive', () => {
+    const gw = loadPricing(path.join(findRepoRoot(), 'config', 'model-pricing.tokenharbor.json'));
+    const big = usage({ inputTokens: 1_000_000, outputTokens: 1_000_000 });
+    expect(computeLlmCost(gw, 'claude-haiku-5.5:free', big)).toEqual({ usd: 0, estimated: false });
+    const unknown = computeLlmCost(gw, 'claude-opus-5-5', big);
+    expect(unknown.estimated).toBe(true);
+    expect(unknown.usd).toBe(60); // unknownModelRates: $10 in + $50 out
+    expect(unpricedModels(gw, ['claude-haiku-5.5:free', 'x', 'x'])).toEqual(['x']);
   });
 });

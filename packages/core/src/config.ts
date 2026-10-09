@@ -62,8 +62,24 @@ const envSchema = z
     APP_TIMEZONE: timezone.default('Europe/Moscow'),
 
     // mock = canned answers, no API calls (default). anthropic = real Claude API.
-    LLM_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
+    LLM_PROVIDER: z.enum(['mock', 'anthropic', 'tokenharbor']).default('mock'),
     ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    // Token Harbor gateway (Anthropic-compatible /v1/messages). Base URL without /v1: the SDK appends /v1/messages.
+    TOKENHARBOR_API_KEY: z.string().min(1).optional(),
+    TOKENHARBOR_BASE_URL: z
+      .url()
+      .refine((u) => !/\/v1\/?$/.test(u), {
+        error: 'must not end with /v1 (the SDK adds /v1/messages itself)',
+      })
+      .optional(),
+    TOKENHARBOR_AUTH: z.enum(['x-api-key', 'bearer']).default('x-api-key'),
+    // false = the JSON schema goes into the system prompt instead of output_config.format (Zod still validates).
+    LLM_STRUCTURED_OUTPUTS: bool.default(true),
+    // Client-side throttle (0 = off). Requests over the limit wait instead of hitting 429.
+    LLM_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(0),
+    LLM_RATE_LIMIT_PER_HOUR: z.coerce.number().int().min(0).default(0),
+    // Multiplies reservations and recorded costs: budgets trip earlier if provider token counts drift.
+    LLM_COST_SAFETY_FACTOR: z.coerce.number().min(1).max(5).default(1.2),
     LLM_MODEL_CEO: z.string().min(1).default('claude-opus-5-5'),
     LLM_MODEL_CRITIC: z.string().min(1).default('claude-opus-5-5'),
     LLM_MODEL_WORKER: z.string().min(1).default('claude-sonnet-5-5'),
@@ -72,7 +88,8 @@ const envSchema = z
     LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(3),
     LLM_STORE_FULL_TEXT: bool.default(true),
     LLM_REFUSAL_FALLBACK: bool.default(true),
-    MODEL_PRICING_FILE: z.string().min(1).default('config/model-pricing.json'),
+    // Default depends on LLM_PROVIDER: config/model-pricing.json or config/model-pricing.tokenharbor.json.
+    MODEL_PRICING_FILE: z.string().min(1).optional(),
 
     BUDGET_DAILY_USD: usd.default(5),
     BUDGET_MONTHLY_USD: usd.default(50),
@@ -107,6 +124,16 @@ const envSchema = z
             message: 'is required when STORAGE_DRIVER=s3',
           });
         }
+      }
+    }
+    if (env.LLM_PROVIDER === 'tokenharbor') {
+      for (const key of ['TOKENHARBOR_API_KEY', 'TOKENHARBOR_BASE_URL'] as const) {
+        if (!env[key])
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: 'is required when LLM_PROVIDER=tokenharbor',
+          });
       }
     }
     if (env.LLM_PROVIDER === 'anthropic' && !env.ANTHROPIC_API_KEY) {
@@ -159,7 +186,7 @@ export interface AppConfig {
 }
 
 export interface LlmConfig {
-  provider: 'mock' | 'anthropic';
+  provider: 'mock' | 'anthropic' | 'tokenharbor';
   apiKey: string | undefined;
   models: { ceo: string; critic: string; worker: string; classifier: string };
   timeoutMs: number;
@@ -167,6 +194,12 @@ export interface LlmConfig {
   storeFullText: boolean;
   refusalFallback: boolean;
   pricingFile: string;
+  /** Base URL for the SDK; null = Anthropic's default. */
+  baseUrl: string | null;
+  authMode: 'x-api-key' | 'bearer';
+  structuredOutputs: boolean;
+  rateLimit: { perMinute: number; perHour: number };
+  costSafetyFactor: number;
 }
 
 export interface BudgetConfig {
@@ -244,7 +277,12 @@ export function loadConfig(
     timezone: e.APP_TIMEZONE,
     llm: {
       provider: e.LLM_PROVIDER,
-      apiKey: e.ANTHROPIC_API_KEY,
+      apiKey: e.LLM_PROVIDER === 'tokenharbor' ? e.TOKENHARBOR_API_KEY : e.ANTHROPIC_API_KEY,
+      baseUrl: e.LLM_PROVIDER === 'tokenharbor' ? e.TOKENHARBOR_BASE_URL! : null,
+      authMode: e.LLM_PROVIDER === 'tokenharbor' ? e.TOKENHARBOR_AUTH : 'x-api-key',
+      structuredOutputs: e.LLM_STRUCTURED_OUTPUTS,
+      rateLimit: { perMinute: e.LLM_RATE_LIMIT_PER_MINUTE, perHour: e.LLM_RATE_LIMIT_PER_HOUR },
+      costSafetyFactor: e.LLM_COST_SAFETY_FACTOR,
       models: {
         ceo: e.LLM_MODEL_CEO,
         critic: e.LLM_MODEL_CRITIC,
@@ -254,8 +292,15 @@ export function loadConfig(
       timeoutMs: e.LLM_TIMEOUT_MS,
       maxRetries: e.LLM_MAX_RETRIES,
       storeFullText: e.LLM_STORE_FULL_TEXT,
-      refusalFallback: e.LLM_REFUSAL_FALLBACK,
-      pricingFile: path.resolve(rootDir, e.MODEL_PRICING_FILE),
+      // Server-side refusal fallback is an Anthropic beta: always off behind a gateway.
+      refusalFallback: e.LLM_PROVIDER === 'anthropic' && e.LLM_REFUSAL_FALLBACK,
+      pricingFile: path.resolve(
+        rootDir,
+        e.MODEL_PRICING_FILE ??
+          (e.LLM_PROVIDER === 'tokenharbor'
+            ? 'config/model-pricing.tokenharbor.json'
+            : 'config/model-pricing.json'),
+      ),
     },
     budget: {
       dailyUsd: e.BUDGET_DAILY_USD,

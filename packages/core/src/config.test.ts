@@ -130,4 +130,64 @@ describe('loadConfig', () => {
       errorOf(() => loadConfig({ ...base, TELEGRAM_OWNER_ID: '@me' }, '/repo')).problems[0],
     ).toMatch(/^TELEGRAM_OWNER_ID:/);
   });
+
+  describe('Token Harbor gateway', () => {
+    const th = {
+      ...base,
+      LLM_PROVIDER: 'tokenharbor',
+      TOKENHARBOR_API_KEY: 'th-secret-value',
+      TOKENHARBOR_BASE_URL: 'https://tokenharbor.ai',
+      LLM_MODEL_CEO: 'claude-haiku-5.5:free',
+      LLM_REFUSAL_FALLBACK: 'true',
+    };
+
+    it('requires key and base URL, names both', () => {
+      const err = errorOf(() => loadConfig({ ...base, LLM_PROVIDER: 'tokenharbor' }, '/repo'));
+      expect(err.problems.map((p) => p.split(':')[0])).toEqual([
+        'TOKENHARBOR_API_KEY',
+        'TOKENHARBOR_BASE_URL',
+      ]);
+    });
+
+    it('rejects a base URL ending in /v1 (the SDK appends /v1/messages)', () => {
+      const err = errorOf(() =>
+        loadConfig({ ...th, TOKENHARBOR_BASE_URL: 'https://tokenharbor.ai/v1' }, '/repo'),
+      );
+      expect(err.problems[0]).toMatch(/^TOKENHARBOR_BASE_URL: must not end with \/v1/);
+    });
+
+    it('maps the gateway settings, forces refusal fallback off, picks the gateway price list', () => {
+      const c = loadConfig(th, '/repo');
+      expect(c.llm).toMatchObject({
+        provider: 'tokenharbor',
+        apiKey: 'th-secret-value',
+        baseUrl: 'https://tokenharbor.ai',
+        authMode: 'x-api-key',
+        refusalFallback: false,
+        costSafetyFactor: 1.2,
+      });
+      expect(c.llm.models.ceo).toBe('claude-haiku-5.5:free');
+      expect(c.llm.pricingFile.replace(/\\/g, '/')).toMatch(
+        /config\/model-pricing\.tokenharbor\.json$/,
+      );
+      expect(loadConfig(base, '/repo').llm.pricingFile.replace(/\\/g, '/')).toMatch(
+        /config\/model-pricing\.json$/,
+      );
+      expect(JSON.stringify(describeConfig(c))).not.toContain('th-secret-value');
+    });
+
+    it('rate limits and structured outputs are configurable', () => {
+      const c = loadConfig(
+        {
+          ...th,
+          LLM_RATE_LIMIT_PER_MINUTE: '60',
+          LLM_RATE_LIMIT_PER_HOUR: '1800',
+          LLM_STRUCTURED_OUTPUTS: 'false',
+        },
+        '/repo',
+      );
+      expect(c.llm.rateLimit).toEqual({ perMinute: 60, perHour: 1800 });
+      expect(c.llm.structuredOutputs).toBe(false);
+    });
+  });
 });
