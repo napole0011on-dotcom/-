@@ -4,8 +4,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { errorToJson, type Actor, type Logger, type PanelConfig } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import type { DecisionResult, Workflow } from '@cms/agents';
+import { AGENTS, runAgentTest, type DecisionResult, type Workflow } from '@cms/agents';
 import {
+  agentSettingsView,
   approvalQueue,
   agentCards,
   llmCallText,
@@ -23,7 +24,7 @@ export interface Mirror {
   notify(text: string, reopenTaskId?: string): Promise<void>;
 }
 
-export interface PanelDeps extends QueryDeps {
+export interface PanelDeps extends Omit<QueryDeps, 'controls'> {
   workflow: Workflow;
   panel: PanelConfig & { passwordHash: string };
   mirror: Mirror;
@@ -59,7 +60,8 @@ async function audit(
     .values({ brandId, actorKind: 'human', actorId: ACTOR.id, action, details });
 }
 
-export async function registerPanel(app: FastifyInstance, d: PanelDeps): Promise<void> {
+export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps): Promise<void> {
+  const d = { ...panelDeps, controls: panelDeps.workflow.controls };
   await app.register(cookie);
 
   app.addHook('onSend', async (_req, reply, payload) => {
@@ -146,7 +148,7 @@ export async function registerPanel(app: FastifyInstance, d: PanelDeps): Promise
   }));
 
   // ------------------------------------------------------------------ reads
-  app.get('/api/status', () => llmStatus(d));
+  app.get('/api/status', async () => llmStatus(d));
   app.get('/api/agents', async () => agentCards(d));
   app.get('/api/tasks', async () => taskBoard(d));
   app.get('/api/approvals', async () => approvalQueue(d));
@@ -307,4 +309,105 @@ export async function registerPanel(app: FastifyInstance, d: PanelDeps): Promise
       d.workflow.approveBudget(req.params.id, body.data.extraUsd, ACTOR),
     );
   });
+
+  // ------------------------------------------------------------------ agent management (step 2)
+  /** Control changes: same audit trail as everything else, short copy to Telegram. */
+  async function control(reply: FastifyReply, fn: () => Promise<{ ok: boolean; message: string }>) {
+    try {
+      const r = await fn();
+      if (r.ok) {
+        await d.mirror.notify(`🖥 В панели: ${r.message}`).catch((err: unknown) => {
+          d.logger.warn({ err: errorToJson(err) }, 'telegram mirror failed');
+        });
+      }
+      return reply.code(r.ok ? 200 : 409).send(r);
+    } catch (err) {
+      d.logger.warn({ err: errorToJson(err) }, 'panel control failed');
+      return reply
+        .code(400)
+        .send({ ok: false, message: err instanceof Error ? err.message : 'Ошибка' });
+    }
+  }
+  const brand = () => d.brandId();
+
+  app.post('/api/controls/stop-all', (_req, reply) =>
+    control(reply, () => d.controls.setAllPaused(brand(), true, ACTOR)),
+  );
+  app.post('/api/controls/resume-all', (_req, reply) =>
+    control(reply, () => d.controls.setAllPaused(brand(), false, ACTOR)),
+  );
+
+  type AgentParams = { agent: string; versionId?: string };
+  const agentRoute = (
+    path: string,
+    handler: (
+      agent: string,
+      req: FastifyRequest<{ Params: AgentParams }>,
+      reply: FastifyReply,
+    ) => unknown,
+  ) =>
+    app.post<{ Params: AgentParams }>(`/api/agents/:agent/${path}`, async (req, reply) => {
+      const agent = agentParam.safeParse(req.params.agent);
+      if (!agent.success) return reply.code(404).send({ ok: false, message: 'Нет такого агента' });
+      return handler(agent.data, req, reply);
+    });
+
+  agentRoute('pause', (a, _r, reply) =>
+    control(reply, () => d.controls.setPaused(brand(), a, true, ACTOR)),
+  );
+  agentRoute('resume', (a, _r, reply) =>
+    control(reply, () => d.controls.setPaused(brand(), a, false, ACTOR)),
+  );
+  agentRoute('disable', (a, _r, reply) =>
+    control(reply, () => d.controls.setDisabled(brand(), a, true, ACTOR)),
+  );
+  agentRoute('enable', (a, _r, reply) =>
+    control(reply, () => d.controls.setDisabled(brand(), a, false, ACTOR)),
+  );
+
+  agentRoute('model', (a, req, reply) => {
+    const body = z.object({ model: z.string().trim().min(1).max(200) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Выберите модель' });
+    return control(reply, () => d.controls.setModel(brand(), a, body.data.model, ACTOR));
+  });
+  agentRoute('model/reset', (a, _r, reply) =>
+    control(reply, () => d.controls.resetModel(brand(), a, ACTOR)),
+  );
+
+  // The 32 KB limit is checked by validatePromptText; this bound only stops oversized bodies.
+  const promptBody = z.object({ text: z.string().max(200_000) });
+  agentRoute('prompts', (a, req, reply) => {
+    const body = promptBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Нет текста промпта' });
+    return control(reply, () => d.controls.savePrompt(brand(), a, body.data.text, ACTOR));
+  });
+  agentRoute('prompts/:versionId/activate', (a, req, reply) => {
+    const versionId = req.params.versionId ?? '';
+    if (!uuid.safeParse(versionId).success)
+      return reply.code(400).send({ ok: false, message: 'Неверный id версии' });
+    return control(reply, () => d.controls.activatePrompt(brand(), a, versionId, ACTOR));
+  });
+
+  agentRoute('test', async (a, req, reply) => {
+    const body = z
+      .object({ promptText: z.string().max(200_000).nullable().optional() })
+      .safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверный запрос' });
+    const r = await runAgentTest(
+      { db: d.db, config: d.config, controls: d.controls, logger: d.logger },
+      brand(),
+      a,
+      { promptText: body.data.promptText ?? null },
+      ACTOR,
+    );
+    return reply.code(r.ok ? 200 : 409).send(r);
+  });
+
+  app.get<{ Params: { agent: string } }>('/api/agents/:agent/settings', async (req, reply) => {
+    const agent = agentParam.safeParse(req.params.agent);
+    if (!agent.success) return reply.code(404).send({ error: 'Нет такого агента' });
+    return agentSettingsView(d, agent.data);
+  });
 }
+
+const agentParam = z.enum(AGENTS.map((a) => a.id) as [string, ...string[]]);

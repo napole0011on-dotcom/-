@@ -16,6 +16,7 @@ import {
   MockLlmTransport,
   Workflow,
   loadBrandProfileFile,
+  syncPromptFiles,
   upsertBrand,
   type OwnerChannel,
 } from '@cms/agents';
@@ -69,6 +70,8 @@ async function main() {
 
   const pricing = loadPricing(config.llm.pricingFile);
   const { brand } = await upsertBrand(db, loadBrandProfileFile(config.brandProfileFile));
+  const promptSync = await syncPromptFiles(db, brand.id);
+  if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
   const budget = { config: config.budget, timeZone: config.timezone };
   const queue = await RunQueue.start({
     config,

@@ -101,7 +101,13 @@ describe('web panel API (Postgres)', () => {
   const drain = async () => {
     while (queue.length) {
       await processRun(
-        { db: t.db, notifier: new RecordingChannel(), logger: silentLogger, staleAfterSeconds: 60 },
+        {
+          db: t.db,
+          notifier: new RecordingChannel(),
+          logger: silentLogger,
+          staleAfterSeconds: 60,
+          gate: wf.gate,
+        },
         queue.shift()!,
         wf.handleRun,
         new AbortController().signal,
@@ -398,6 +404,116 @@ describe('web panel API (Postgres)', () => {
       expect(Object.keys(status.models)).toEqual(['ceo', 'critic', 'worker', 'classifier']);
     });
 
+    it('agent management: pause holds runs, model only from price list, prompt versions, test, stop all', async () => {
+      const s = await loginOk();
+      type Card = {
+        id: string;
+        status: string;
+        waitingRuns: number;
+        model: { name: string; source: string };
+        promptVersion: string;
+        controls: { paused: boolean; allPaused: boolean };
+      };
+      const card = async (id: string) =>
+        (await get(s, '/api/agents')).json<Card[]>().find((c) => c.id === id)!;
+
+      // Pause the copywriter: the copy run waits, the task shows "ждёт агента".
+      expect((await post(s, '/api/agents/copywriter/pause')).statusCode).toBe(200);
+      expect(await card('copywriter')).toMatchObject({
+        status: 'paused',
+        controls: { paused: true },
+      });
+      const { taskId } = (
+        await post(s, '/api/tasks', { brief: 'Пост про какао с маршмеллоу' })
+      ).json<{
+        taskId: string;
+      }>();
+      await drain();
+      await post(s, `/api/tasks/${taskId}/plan`, { action: 'approve' });
+      await drain();
+      const board = (await get(s, '/api/tasks')).json<
+        { id: string; waitingFor: string | null }[]
+      >();
+      expect(board.find((b) => b.id === taskId)!.waitingFor).toBe('Копирайтер');
+      expect((await card('copywriter')).waitingRuns).toBe(1);
+      expect((await post(s, '/api/agents/copywriter/resume')).statusCode).toBe(200);
+      await drain();
+      expect(
+        (await get(s, `/api/tasks/${taskId}`)).json<{ task: { status: string } }>().task.status,
+      ).toBe('awaiting_final_approval');
+
+      // Model: settings list only price-list models; anything else is refused.
+      const settings = (await get(s, '/api/agents/critic/settings')).json<{
+        model: { allowed: string[]; source: string; env: string };
+        prompts: { active: { id: string; label: string }; versions: unknown[] };
+      }>();
+      expect(settings.model.allowed).toContain('claude-haiku-5-5');
+      expect(settings.model.source).toBe('.env');
+      expect((await post(s, '/api/agents/critic/model', { model: 'not-a-model' })).statusCode).toBe(
+        409,
+      );
+      expect(
+        (await post(s, '/api/agents/critic/model', { model: 'claude-haiku-5-5' })).statusCode,
+      ).toBe(200);
+      expect((await card('critic')).model).toMatchObject({
+        name: 'claude-haiku-5-5',
+        source: 'panel',
+      });
+      expect((await post(s, '/api/agents/critic/model/reset')).statusCode).toBe(200);
+      expect((await card('critic')).model.source).toBe('.env');
+
+      // Prompt edit creates a new active version; rollback to the previous one.
+      const saved = await post(s, '/api/agents/critic/prompts', {
+        text: 'Новый промпт Critic: строже к фактам.',
+      });
+      expect(saved.statusCode).toBe(200);
+      expect((await card('critic')).promptVersion).toMatch(/^critic@2#/);
+      expect((await post(s, '/api/agents/critic/prompts', { text: '' })).statusCode).toBe(409);
+      expect(
+        (await post(s, `/api/agents/critic/prompts/${settings.prompts.active.id}/activate`))
+          .statusCode,
+      ).toBe(200);
+      expect((await card('critic')).promptVersion).toBe(settings.prompts.active.label);
+
+      // Test run with a draft prompt: mock, no task on the board.
+      const test = await post(s, '/api/agents/ceo/test', { promptText: 'Черновик CEO' });
+      expect(test.json<{ ok: boolean; promptVersion: string }>()).toMatchObject({
+        ok: true,
+        promptVersion: expect.stringMatching(/^ceo@draft#/) as unknown,
+      });
+      const boardIds = (await get(s, '/api/tasks')).json<{ kind?: string; title: string }[]>();
+      expect(boardIds.some((b) => b.title.startsWith('Тест агента'))).toBe(false);
+
+      // Stop all / resume all: visible in status, audited, mirrored to Telegram.
+      expect((await post(s, '/api/controls/stop-all')).statusCode).toBe(200);
+      expect(
+        (await get(s, '/api/status')).json<{ controls: { allPaused: boolean } }>().controls
+          .allPaused,
+      ).toBe(true);
+      expect((await card('ceo')).status).toBe('paused');
+      expect((await post(s, '/api/controls/stop-all')).statusCode).toBe(409);
+      expect((await post(s, '/api/controls/resume-all')).statusCode).toBe(200);
+      expect(mirrored.map((m) => m.text).join('\n')).toMatch(/В панели: Все агенты остановлены/);
+
+      // Without CSRF nothing changes.
+      const noCsrf = await app.inject({
+        method: 'POST',
+        url: '/api/controls/stop-all',
+        headers: { cookie: s.cookie, origin: ORIGIN },
+      });
+      expect(noCsrf.statusCode).toBe(403);
+      expect((await post(s, '/api/agents/nobody/pause')).statusCode).toBe(404);
+
+      const audit = await t.db
+        .select({ action: schema.auditLog.action, actor: schema.auditLog.actorId })
+        .from(schema.auditLog)
+        .where(
+          sql`${schema.auditLog.action} in ('agent_paused','agent_resumed','agent_model_changed','prompt_saved','prompt_activated','stop_all','resume_all','agent_test')`,
+        );
+      expect(new Set(audit.map((a) => a.action)).size).toBe(8);
+      expect(audit.every((a) => a.actor === 'panel:owner')).toBe(true);
+    });
+
     it('no secret ever appears in any panel response', async () => {
       const s = await loginOk();
       const tasks = (await get(s, '/api/tasks')).json<{ id: string }[]>();
@@ -408,6 +524,7 @@ describe('web panel API (Postgres)', () => {
         '/api/tasks',
         '/api/approvals',
         '/api/spend',
+        '/api/agents/ceo/settings',
         `/api/tasks/${tasks[0]!.id}`,
       ];
       const runId = (await get(s, `/api/tasks/${tasks[0]!.id}`)).json<{ runs: { id: string }[] }>()

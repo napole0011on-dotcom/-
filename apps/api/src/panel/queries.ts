@@ -10,10 +10,15 @@ import { budgetStatus, finalDecisions, latestArtifacts, type BudgetContext } fro
 import {
   AGENTS,
   CeoPlan,
+  TEST_TASK_KIND,
+  agentById,
+  agentsForRun,
   briefText,
   estimatePlan,
-  loadPrompt,
+  getControlState,
+  promptHistory,
   toItemView,
+  type AgentControls,
   type CopyContent,
 } from '@cms/agents';
 
@@ -35,22 +40,48 @@ export interface QueryDeps {
   pricing: ModelPricing;
   budget: BudgetContext;
   brandId: () => string;
+  controls: AgentControls;
+}
+
+/** Tasks that never show on the board: smoke tests and agent test runs. */
+const HIDDEN_KINDS = ['smoke', TEST_TASK_KIND];
+
+/** Runs held in the queue for a paused agent / "stop everything", by task. */
+async function heldRuns(db: Db) {
+  return db
+    .select({ id: runs.id, taskId: runs.taskId, input: runs.input, waitingFor: runs.waitingFor })
+    .from(runs)
+    .where(sql`${runs.status} = 'queued' and ${runs.waitingFor} is not null`);
+}
+
+/** "agent:copywriter" -> "Копирайтер", "all" -> "все агенты остановлены". */
+export function waitingLabel(waitingFor: string): string {
+  if (waitingFor === 'all') return 'все агенты остановлены';
+  const def = agentById(waitingFor.replace(/^agent:/, ''));
+  return def ? def.name : waitingFor;
 }
 
 const HUMAN = { kind: 'human', id: 'panel:owner' } as const;
 const num = (v: string | number | null | undefined) => Number(v ?? 0);
 
-/** Active provider and models: shown in the header and on every agent card. */
-export function llmStatus(d: QueryDeps) {
+/** Active provider and models (with panel overrides): shown in the header. */
+export async function llmStatus(d: QueryDeps) {
   const { llm } = d.config;
-  const models = Object.values(llm.models);
+  const effective = await d.controls.effectiveModels(d.brandId());
+  const models = Object.values(effective);
+  const controls = await getControlState(d.db, d.brandId());
   return {
     provider: llm.provider,
     gatewayHost: llm.baseUrl ? new URL(llm.baseUrl).host : null,
     structuredOutputs: llm.structuredOutputs,
     rateLimit: llm.rateLimit,
     costSafetyFactor: llm.costSafetyFactor,
-    models: llm.models,
+    models: effective,
+    controls: {
+      allPaused: controls.allPaused,
+      changedAt: controls.changedAt,
+      changedBy: controls.changedBy,
+    },
     unpricedModels: llm.provider === 'mock' ? [] : unpricedModels(d.pricing, models),
     budget: {
       dailyUsd: d.config.budget.dailyUsd,
@@ -60,7 +91,7 @@ export function llmStatus(d: QueryDeps) {
   };
 }
 
-export type AgentStatus = 'idle' | 'working' | 'waiting_approval' | 'error' | 'paused';
+export type AgentStatus = 'idle' | 'working' | 'waiting_approval' | 'error' | 'paused' | 'disabled';
 
 export async function agentCards(d: QueryDeps) {
   const { db, config } = d;
@@ -79,8 +110,15 @@ export async function agentCards(d: QueryDeps) {
     .orderBy(tasks.statusChangedAt)
     .limit(1);
 
+  const brandId = d.brandId();
+  const controls = await getControlState(db, brandId);
+  const held = await heldRuns(db);
+
   const cards = [];
   for (const def of AGENTS) {
+    const ctl = controls.agents[def.id]!;
+    const history = await promptHistory(db, brandId, def.prompt);
+    const model = await d.controls.modelOf(brandId, def);
     const [running] = await db
       .select({
         taskId: agentInvocations.taskId,
@@ -125,13 +163,19 @@ export async function agentCards(d: QueryDeps) {
     const waiting = def.id === 'ceo' ? waitingPlan[0] : waitingFinal[0];
     const recentError =
       last?.status === 'failed' && last.startedAt.getTime() > Date.now() - 24 * 3_600_000;
-    const status: AgentStatus = running
-      ? 'working'
-      : waiting
-        ? 'waiting_approval'
-        : recentError
-          ? 'error'
-          : 'idle';
+    const paused = ctl.paused || controls.allPaused;
+    // A run that already started is finished even when the agent is paused.
+    const status: AgentStatus = ctl.disabled
+      ? 'disabled'
+      : running
+        ? 'working'
+        : paused
+          ? 'paused'
+          : waiting
+            ? 'waiting_approval'
+            : recentError
+              ? 'error'
+              : 'idle';
     const ok = num(stats?.ok);
     const failed = num(stats?.failed);
     cards.push({
@@ -155,11 +199,27 @@ export async function agentCards(d: QueryDeps) {
       success: { ok, failed, rate: ok + failed > 0 ? ok / (ok + failed) : null },
       spentTodayUsd: num(spend?.usd),
       model: {
-        name: config.llm.models[def.modelRole],
+        name: model.name,
+        env: model.env,
         role: def.modelRole,
-        source: '.env' as const,
+        source: model.source,
+        ignoredOverride: model.ignoredOverride,
       },
-      promptVersion: loadPrompt(def.prompt).version,
+      promptVersion: history.active.label,
+      pendingFilePrompt: history.pendingFile?.label ?? null,
+      controls: {
+        paused: ctl.paused,
+        disabled: ctl.disabled,
+        allPaused: controls.allPaused,
+        updatedAt: ctl.updatedAt,
+        updatedBy: ctl.updatedBy,
+      },
+      // Runs held because of THIS agent (or "stop everything" when it needs this agent).
+      waitingRuns: held.filter(
+        (r) =>
+          r.waitingFor === `agent:${def.id}` ||
+          (r.waitingFor === 'all' && agentsForRun(r).includes(def.id as never)),
+      ).length,
     });
   }
   return cards;
@@ -182,14 +242,20 @@ export async function taskBoard(d: QueryDeps) {
   const rows = await d.db
     .select()
     .from(tasks)
-    .where(sql`${tasks.kind} <> 'smoke'`)
+    .where(sql`${tasks.kind} not in ${HIDDEN_KINDS}`)
     .orderBy(sql`${tasks.statusChangedAt} desc`)
     .limit(200);
   const spent = await spentByTask(
     d.db,
     rows.map((r) => r.id),
   );
+  const held = await heldRuns(d.db);
+  const waitingOf = (taskId: string) => {
+    const r = held.find((h) => h.taskId === taskId);
+    return r?.waitingFor ? waitingLabel(r.waitingFor) : null;
+  };
   return rows.map((t) => ({
+    waitingFor: waitingOf(t.id),
     id: t.id,
     title: t.title,
     status: t.status,
@@ -244,6 +310,7 @@ export async function taskDetail(d: QueryDeps, taskId: string) {
       createdAt: runs.createdAt,
       finishedAt: runs.finishedAt,
       error: runs.error,
+      waitingFor: runs.waitingFor,
     })
     .from(runs)
     .where(sql`${runs.taskId} = ${taskId}`)
@@ -267,6 +334,10 @@ export async function taskDetail(d: QueryDeps, taskId: string) {
       statusChangedAt: t.statusChangedAt,
       spentUsd: spent.spentUsd,
       budgetUsd: spent.limitUsd,
+      waitingFor: (() => {
+        const w = runRows.find((r) => r.status === 'queued' && r.waitingFor)?.waitingFor;
+        return w ? waitingLabel(w) : null;
+      })(),
     },
     actions: allowedActions(t.status),
     plans: arts
@@ -347,7 +418,7 @@ export async function approvalQueue(d: QueryDeps) {
       planArtifactId: a.id,
       version: a.version,
       plan,
-      estimate: estimatePlan(plan, d.pricing, d.config.llm.models),
+      estimate: estimatePlan(plan, d.pricing, await d.controls.effectiveModels(t.brandId)),
       spentUsd: spent.spentUsd,
       taskBudgetUsd: spent.limitUsd,
     });
@@ -522,5 +593,33 @@ export async function spendOverview(d: QueryDeps) {
       walletSpentUsd: r.walletSpentUsd === null ? null : num(r.walletSpentUsd),
       recordedRawUsd: num(r.recordedRawUsd),
     })),
+  };
+}
+
+/** "Настроить" drawer: controls, model choice (price list only) and prompt versions. */
+export async function agentSettingsView(d: QueryDeps, agentId: string) {
+  const def = agentById(agentId);
+  if (!def) return null;
+  const brandId = d.brandId();
+  const controls = await getControlState(d.db, brandId);
+  const ctl = controls.agents[def.id]!;
+  const model = await d.controls.modelOf(brandId, def);
+  const prompts = await promptHistory(d.db, brandId, def.prompt);
+  return {
+    agent: { id: def.id, name: def.name, role: def.role, description: def.description },
+    controls: {
+      paused: ctl.paused,
+      disabled: ctl.disabled,
+      allPaused: controls.allPaused,
+      updatedAt: ctl.updatedAt,
+      updatedBy: ctl.updatedBy,
+    },
+    model: { ...model, role: def.modelRole, allowed: d.controls.allowedModels() },
+    prompts: {
+      maxBytes: 32 * 1024,
+      active: prompts.active,
+      pendingFile: prompts.pendingFile,
+      versions: prompts.versions,
+    },
   };
 }
