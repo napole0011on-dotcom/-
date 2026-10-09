@@ -4,6 +4,7 @@ import type {
   MessageCreateParamsNonStreaming,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import { PermanentError, TransientError, type LlmConfig } from '@cms/core';
+import { RateLimiter } from './rate-limiter.js';
 
 export type LlmRequest = MessageCreateParamsNonStreaming;
 export type LlmResponse = BetaMessage;
@@ -27,6 +28,84 @@ export function createAnthropicTransport(config: LlmConfig): LlmTransport {
   return {
     create: (params, options) => client.beta.messages.create(params, options),
   };
+}
+
+/**
+ * Anthropic-compatible gateway (Token Harbor): the official SDK with another base URL.
+ * The SDK's own retries are off (maxRetries: 0) because they would bypass the rate limiter;
+ * every request goes through the limiter, and a 429 freezes the limiter for Retry-After.
+ */
+export function createGatewayTransport(
+  config: LlmConfig,
+  limiter: RateLimiter,
+  /** Tests inject a fake fetch to inspect the exact HTTP requests the SDK makes. */
+  fetchImpl?: typeof fetch,
+): LlmTransport {
+  if (!config.apiKey) throw new PermanentError('missing_api_key', 'TOKENHARBOR_API_KEY is not set');
+  if (!config.baseUrl)
+    throw new PermanentError('missing_base_url', 'TOKENHARBOR_BASE_URL is not set');
+  const client = new Anthropic({
+    baseURL: config.baseUrl,
+    ...(config.authMode === 'bearer'
+      ? { apiKey: null, authToken: config.apiKey }
+      : { apiKey: config.apiKey }),
+    maxRetries: 0,
+    timeout: config.timeoutMs,
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+  });
+  return {
+    async create(params, options) {
+      await limiter.acquire(options.signal);
+      try {
+        // Plain /v1/messages (the beta method adds "?beta=true", which a gateway may not accept).
+        // We never send beta-only fields to the gateway, so the shapes are compatible.
+        const plain: Record<string, unknown> = { ...params };
+        delete plain.betas;
+        delete plain.fallbacks;
+        const res = await client.messages.create(
+          plain as unknown as Anthropic.MessageCreateParamsNonStreaming,
+          options,
+        );
+        return res as unknown as LlmResponse;
+      } catch (err) {
+        const retryAfterMs = retryAfterMsOf(err);
+        if (retryAfterMs !== null) limiter.pauseFor(retryAfterMs);
+        throw err;
+      }
+    },
+  };
+}
+
+/** Picks the transport for LLM_PROVIDER (mock is created by the caller: it lives in @cms/agents). */
+export function createLlmTransport(config: LlmConfig): LlmTransport {
+  if (config.provider === 'tokenharbor') {
+    const limiter = new RateLimiter([
+      { limit: config.rateLimit.perMinute, windowMs: 60_000 },
+      { limit: config.rateLimit.perHour, windowMs: 3_600_000 },
+    ]);
+    return createGatewayTransport(config, limiter);
+  }
+  if (config.provider === 'anthropic') return createAnthropicTransport(config);
+  throw new PermanentError(
+    'no_real_transport',
+    `LLM_PROVIDER=${config.provider} has no real transport`,
+  );
+}
+
+/** Retry-After (seconds or HTTP date) / retry-after-ms from a 429 or 503, in milliseconds. */
+export function retryAfterMsOf(err: unknown): number | null {
+  if (!(err instanceof Anthropic.APIError) || !(err.status === 429 || err.status === 503))
+    return null;
+  const h = (err as { headers?: Headers | null }).headers;
+  if (!h) return null;
+  const ms = Number(h.get('retry-after-ms'));
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  const raw = h.get('retry-after');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
 }
 
 /**
@@ -54,10 +133,13 @@ export function classifyLlmError(err: unknown): TransientError | PermanentError 
     );
   }
   if (err instanceof Anthropic.RateLimitError) {
+    const ms = retryAfterMsOf(err);
     return new TransientError(
       'llm_rate_limited',
-      'LLM rate limited (429)',
-      { status: 429 },
+      ms !== null
+        ? `LLM rate limited (429), retry after ${Math.ceil(ms / 1000)}s`
+        : 'LLM rate limited (429)',
+      { status: 429, ...(ms !== null ? { retryAfterSeconds: Math.ceil(ms / 1000) } : {}) },
       { cause: err },
     );
   }

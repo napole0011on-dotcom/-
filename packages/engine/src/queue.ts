@@ -1,6 +1,7 @@
 import { schema, type DbOrTx, sql } from '@cms/db';
 import { PgBoss } from 'pg-boss';
 import {
+  AppError,
   BudgetExceededError,
   PermanentError,
   errorToJson,
@@ -45,7 +46,12 @@ export interface RunDeps {
   staleAfterSeconds: number;
   /** Buttons for the budget-pause message (e.g. "+$1 and continue"); provided by the UI layer. */
   pauseButtons?: (taskId: string) => NotifierButton[][];
+  /** Re-delivers a run after N seconds (used to honour Retry-After). Set by RunQueue. */
+  enqueueAfter?: (runId: string, seconds: number) => Promise<unknown>;
 }
+
+/** Cap on Retry-After re-deliveries per run, so a permanently throttled run still ends in dead letter. */
+export const MAX_DELAYED_RETRIES = 20;
 
 export type RunOutcome = 'succeeded' | 'skipped' | 'paused' | 'failed' | 'retry';
 
@@ -115,6 +121,19 @@ export async function processRun(
       }
       log.warn({ err: errorToJson(err) }, 'run paused: budget exceeded');
       return 'paused';
+    }
+    const retryAfter = err instanceof AppError ? Number(err.details.retryAfterSeconds) : NaN;
+    if (
+      Number.isFinite(retryAfter) &&
+      retryAfter > 0 &&
+      deps.enqueueAfter &&
+      run.attempt <= MAX_DELAYED_RETRIES
+    ) {
+      // The provider told us when to come back: wait exactly that long, without burning queue retries.
+      await requeueRun(db, run.id, err);
+      await deps.enqueueAfter(run.id, Math.ceil(retryAfter) + 1);
+      log.warn({ retryAfterSeconds: retryAfter }, 'rate limited; run re-queued after Retry-After');
+      return 'retry';
     }
     if (isRetryable(err)) {
       await requeueRun(db, run.id, err);
@@ -202,6 +221,15 @@ export class RunQueue {
     return new RunQueue(boss, opts);
   }
 
+  /** Delayed re-delivery; a distinct singletonKey because the current job is still active. */
+  async enqueueAfter(runId: string, seconds: number): Promise<string | null> {
+    return this.boss.send(
+      QUEUE_RUNS,
+      { runId },
+      { singletonKey: `${runId}:after:${Date.now()}`, startAfter: seconds },
+    );
+  }
+
   /** singletonKey = runId: enqueueing the same run twice while queued creates one job. */
   async enqueue(runId: string): Promise<string | null> {
     return this.boss.send(QUEUE_RUNS, { runId }, { singletonKey: runId });
@@ -209,9 +237,10 @@ export class RunQueue {
 
   async work(handler: RunHandler, opts: { pollingIntervalSeconds?: number } = {}): Promise<void> {
     const polling = { pollingIntervalSeconds: opts.pollingIntervalSeconds ?? 2 };
+    const deps: RunDeps = { ...this.opts.deps, enqueueAfter: (id, s) => this.enqueueAfter(id, s) };
     await this.boss.work<{ runId: string }>(QUEUE_RUNS, polling, async ([job]) => {
       if (!job) return;
-      await processRun(this.opts.deps, job.data.runId, handler, job.signal);
+      await processRun(deps, job.data.runId, handler, job.signal);
     });
     await this.boss.work<{ runId: string }>(QUEUE_RUNS_DEAD, polling, async ([job]) => {
       if (!job) return;
