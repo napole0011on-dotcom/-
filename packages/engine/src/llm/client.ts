@@ -4,7 +4,7 @@ import type {
   BetaMessageParam,
   BetaTextBlockParam,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages';
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   PermanentError,
   computeLlmCost,
@@ -78,7 +78,10 @@ export interface StructuredCallResult<T> {
   output: T;
   requestedModel: string;
   servedModel: string;
+  /** Cost counted against budgets (token cost x LLM_COST_SAFETY_FACTOR). */
   costUsd: number;
+  /** Token cost from the price list, without the safety factor. */
+  rawCostUsd: number;
   attempts: number;
   replayed: boolean;
 }
@@ -154,6 +157,42 @@ function textOf(res: LlmResponse): string {
     .join('');
 }
 
+/**
+ * Without structured outputs models sometimes wrap JSON in ```json fences or add a line of
+ * text around it. Take the outermost {...} object; Zod decides whether it is valid.
+ */
+export function extractJson(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed)?.[1];
+    if (fenced) {
+      try {
+        return JSON.parse(fenced.trim());
+      } catch {
+        // fall through to brace extraction
+      }
+    }
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+    throw new Error('no JSON object found in the answer');
+  }
+}
+
+/** System block that replaces output_config.format when the provider has no structured outputs. */
+export function schemaInstruction(schema: z.ZodType): string {
+  const json = JSON.stringify(z.toJSONSchema(schema, { unrepresentable: 'any' }));
+  return [
+    'Формат ответа: верни ровно один JSON-объект, который соответствует этой JSON Schema.',
+    'Без пояснений, без markdown, без ``` — только JSON.',
+    json,
+  ].join('\n');
+}
+
+const round8 = (n: number) => Math.round(n * 1e8) / 1e8;
+
 function validationFeedback(issues: string): string {
   return [
     'Your previous answer did not pass validation:',
@@ -189,11 +228,15 @@ export class LlmClient {
     const maxTokens = input.maxTokens ?? 16_000;
     const format = zodOutputFormat(input.schema);
 
+    const structured = this.deps.config.structuredOutputs;
+    const factor = this.deps.config.costSafetyFactor;
     const system: BetaTextBlockParam[] = input.system.map((b) =>
       b.cache
         ? { type: 'text', text: b.text, cache_control: { type: 'ephemeral' } }
         : { type: 'text', text: b.text },
     );
+    // Not cached: per-call schemas (e.g. deliverable ids) differ between calls.
+    if (!structured) system.push({ type: 'text', text: schemaInstruction(input.schema) });
     const messages: BetaMessageParam[] = [{ role: 'user', content: input.prompt }];
     const useFallback = this.deps.config.refusalFallback && FALLBACK_MODELS.has(input.model);
 
@@ -204,10 +247,14 @@ export class LlmClient {
         max_tokens: maxTokens,
         system,
         messages,
-        output_config: {
-          format: { type: format.type, schema: format.schema },
-          ...(input.effort ? { effort: input.effort } : {}),
-        },
+        ...(structured || input.effort
+          ? {
+              output_config: {
+                ...(structured ? { format: { type: format.type, schema: format.schema } } : {}),
+                ...(input.effort ? { effort: input.effort } : {}),
+              },
+            }
+          : {}),
         ...(useFallback ? { fallbacks: 'default' as const, betas: [FALLBACK_BETA] } : {}),
       };
 
@@ -215,7 +262,7 @@ export class LlmClient {
         this.deps.pricing,
         input.model,
         estimatePromptTokens([
-          ...input.system.map((s) => s.text),
+          ...system.map((s) => s.text),
           ...messages.map((m) => JSON.stringify(m.content)),
         ]),
         maxTokens,
@@ -227,9 +274,9 @@ export class LlmClient {
         runId: ctx.runId,
         agent: ctx.agent,
         kind: 'llm',
-        provider: 'anthropic',
+        provider: this.deps.config.provider,
         model: input.model,
-        estimateUsd: estimate,
+        estimateUsd: round8(estimate * factor),
         idempotencyKey: `cost:${input.idempotencyKey}:a${attempt}:${randomUUID()}`,
       });
 
@@ -256,7 +303,8 @@ export class LlmClient {
       const cost = costOfResponse(this.deps.pricing, input.model, res);
       totalCost += cost.usd;
       await finalizeCost(this.deps.db, reservation.id, {
-        costUsd: cost.usd,
+        costUsd: round8(cost.usd * factor),
+        rawCostUsd: cost.usd,
         model: res.model,
         estimated: cost.estimated,
         inputTokens: cost.totals.input,
@@ -296,7 +344,7 @@ export class LlmClient {
         issues = `- the answer was cut off at max_tokens=${maxTokens}; make it shorter`;
       } else {
         try {
-          const parsed = input.schema.safeParse(JSON.parse(text));
+          const parsed = input.schema.safeParse(extractJson(text));
           if (parsed.success) output = parsed.data;
           else
             issues = parsed.error.issues
@@ -315,7 +363,8 @@ export class LlmClient {
           output,
           requestedModel: input.model,
           servedModel: res.model,
-          costUsd: Math.round(totalCost * 1e8) / 1e8,
+          costUsd: round8(totalCost * factor),
+          rawCostUsd: round8(totalCost),
           attempts: attempt,
           replayed: false,
         };

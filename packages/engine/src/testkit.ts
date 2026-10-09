@@ -109,6 +109,12 @@ export function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
     storeFullText: true,
     refusalFallback: true,
     pricingFile: path.join(findRepoRoot(), 'config', 'model-pricing.json'),
+    baseUrl: null,
+    authMode: 'x-api-key',
+    structuredOutputs: true,
+    rateLimit: { perMinute: 0, perHour: 0 },
+    // 1 keeps cost assertions exact; the safety factor has its own tests.
+    costSafetyFactor: 1,
     ...overrides,
   };
 }

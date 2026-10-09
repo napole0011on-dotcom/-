@@ -22,6 +22,13 @@
       "when": 1791501147603,
       "tag": "0002_approval_choice",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791536595402,
+      "tag": "0003_wallet_reconciliation",
+      "breakpoints": true
     }
   ]
 }

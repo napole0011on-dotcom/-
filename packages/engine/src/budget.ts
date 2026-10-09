@@ -165,7 +165,10 @@ export async function reserveCost(
 }
 
 export interface FinalCost {
+  /** Amount counted against budgets (already multiplied by the safety factor). */
   costUsd: number;
+  /** Price-list cost without the safety factor; defaults to costUsd. */
+  rawCostUsd?: number;
   model: string;
   estimated: boolean;
   inputTokens?: number;
@@ -182,6 +185,7 @@ export async function finalizeCost(db: DbOrTx, id: string, cost: FinalCost): Pro
     .set({
       status: 'final',
       costUsd: cost.costUsd.toFixed(8),
+      rawCostUsd: (cost.rawCostUsd ?? cost.costUsd).toFixed(8),
       model: cost.model,
       estimated: cost.estimated,
       inputTokens: cost.inputTokens ?? 0,

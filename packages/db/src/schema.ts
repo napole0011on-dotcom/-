@@ -202,7 +202,10 @@ export const costRecords = pgTable(
     model: text('model').notNull(),
     status: costStatus('status').notNull().default('reserved'),
     reservedUsd: usd('reserved_usd').notNull(),
+    /** Counted against budgets: token cost x LLM_COST_SAFETY_FACTOR. */
     costUsd: usd('cost_usd').notNull().default('0'),
+    /** Token cost from the price list, without the safety factor (used for reconciliation). */
+    rawCostUsd: usd('raw_cost_usd').notNull().default('0'),
     estimated: boolean('estimated').notNull().default(false),
     inputTokens: integer('input_tokens').notNull().default(0),
     outputTokens: integer('output_tokens').notNull().default(0),
@@ -281,3 +284,27 @@ export const idempotencyKeys = pgTable('idempotency_keys', {
   createdAt: createdAt(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
 });
+
+/**
+ * Wallet balance snapshots for reconciling our cost accounting with what the provider
+ * actually charged (/reconcile in the bot). Append-only by convention.
+ */
+export const walletSnapshots = pgTable(
+  'wallet_snapshots',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    provider: text('provider').notNull(),
+    balanceUsd: usd('balance_usd').notNull(),
+    /** Our raw recorded spend for this provider since the previous snapshot. */
+    recordedRawUsd: usd('recorded_raw_usd').notNull().default('0'),
+    /** Balance decrease since the previous snapshot (null for the first one or after a top-up). */
+    walletSpentUsd: usd('wallet_spent_usd'),
+    source: text('source').notNull(), // 'manual' | 'api'
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('wallet_snapshots_lookup_idx').on(t.brandId, t.provider, t.createdAt)],
+);
