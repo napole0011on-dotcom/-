@@ -15,6 +15,12 @@ const rates = z.object({
 });
 
 const modelPrice = rates.extend({
+  /**
+   * Other names the provider uses for this model in responses (e.g. the gateway answers
+   * "claude-haiku-5.5" for a "claude-haiku-5.5:free" request). Used only to recognise the
+   * served model, never to price a request made under that other name.
+   */
+  aliases: z.array(z.string()).optional(),
   longContext: rates.extend({ thresholdPromptTokens: z.number().int().positive() }).optional(),
 });
 
@@ -132,4 +138,13 @@ export function estimateMaxLlmCost(
 /** Configured models missing from the price list (they are priced as unknown, i.e. expensive). */
 export function unpricedModels(pricing: ModelPricing, models: string[]): string[] {
   return [...new Set(models)].filter((m) => !pricing.models[m]);
+}
+
+/** Canonical price-list key for a model name as a provider reports it (exact name or alias). */
+export function priceKeyForServedModel(pricing: ModelPricing, served: string): string | null {
+  if (pricing.models[served]) return served;
+  for (const [key, entry] of Object.entries(pricing.models)) {
+    if (entry.aliases?.includes(served)) return key;
+  }
+  return null;
 }

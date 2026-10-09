@@ -142,6 +142,46 @@ describe('Token Harbor mode (Postgres + fake transport)', () => {
     });
   });
 
+  it('smoke scenario: $0.02 limit, x1.2, gateway answers "claude-haiku-5.5" -> both calls run at $0, cache read recorded on the 2nd', async () => {
+    const s = await setup(
+      [
+        fakeResponse('{"greeting":"Привет, друзья!","wordCount":2}', {
+          model: 'claude-haiku-5.5',
+          input: 2400,
+          output: 300,
+        }),
+        fakeResponse('{"greeting":"Рады вам!!","wordCount":2}', {
+          model: 'claude-haiku-5.5',
+          input: 60,
+          output: 280,
+          cacheRead: 2340,
+        }),
+      ],
+      { budgetUsd: 0.02, factor: 1.2 },
+    );
+    const first = await s.call(FREE, 'smoke-1');
+    const second = await s.call(FREE, 'smoke-2');
+    expect([first.costUsd, second.costUsd]).toEqual([0, 0]);
+    expect(second.servedModel).toBe('claude-haiku-5.5');
+    expect(s.transport.requests).toHaveLength(2);
+
+    const calls = await t.db
+      .select()
+      .from(schema.llmCalls)
+      .where(sql`${schema.llmCalls.taskId} = ${s.taskId}`)
+      .orderBy(schema.llmCalls.createdAt);
+    expect(
+      calls.map((c) => [c.requestedModel, c.servedModel, c.cacheReadTokens, c.costUsd]),
+    ).toEqual([
+      [FREE, 'claude-haiku-5.5', 0, '0.00000000'],
+      [FREE, 'claude-haiku-5.5', 2340, '0.00000000'],
+    ]);
+    const costs = await s.costs();
+    expect(costs.every((c) => c.model === FREE && c.costUsd === '0.00000000' && !c.estimated)).toBe(
+      true,
+    );
+  });
+
   it('an unknown model behind the gateway is priced at unknownModelRates, never at zero', async () => {
     const s = await setup(
       [fakeResponse('{"greeting":"Привет!!","wordCount":1}', { model: 'claude-sonnet-x' })],

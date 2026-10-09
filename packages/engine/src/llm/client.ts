@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   PermanentError,
   computeLlmCost,
+  priceKeyForServedModel,
   errorToJson,
   estimateMaxLlmCost,
   type LlmConfig,
@@ -103,15 +104,23 @@ export function estimatePromptTokens(texts: string[]): number {
 }
 
 /**
- * Prices a response. With server-side fallback, `usage.iterations` lists every attempt
- * (declined ones included) with the model that ran it; top-level usage covers only the
- * final attempt. We bill every iteration at its own model's price.
+ * Prices a response by the model we REQUESTED — that is the model we chose and know the
+ * price of. The name in the response can differ (a gateway may drop a ":free" suffix), so it
+ * is never used as the price key for our own request.
+ *
+ * Exception: with Anthropic's server-side refusal fallback, `usage.iterations` contains
+ * `fallback_message` attempts that really ran on another model; those are billed at that
+ * model's price (resolved through aliases; unknown -> most expensive, estimated).
+ * Top-level usage covers only the final attempt, so iterations win when present.
  */
 export function costOfResponse(pricing: ModelPricing, requestedModel: string, res: LlmResponse) {
   const attempts =
     res.usage.iterations && res.usage.iterations.length > 0
       ? res.usage.iterations.map((it) => ({
-          model: ('model' in it && it.model) || requestedModel,
+          priceKey:
+            it.type === 'fallback_message' && 'model' in it && it.model
+              ? (priceKeyForServedModel(pricing, it.model) ?? it.model)
+              : requestedModel,
           input: it.input_tokens,
           output: it.output_tokens,
           cacheRead: it.cache_read_input_tokens ?? 0,
@@ -120,7 +129,7 @@ export function costOfResponse(pricing: ModelPricing, requestedModel: string, re
         }))
       : [
           {
-            model: res.model || requestedModel,
+            priceKey: requestedModel,
             input: res.usage.input_tokens,
             output: res.usage.output_tokens,
             cacheRead: res.usage.cache_read_input_tokens ?? 0,
@@ -133,7 +142,7 @@ export function costOfResponse(pricing: ModelPricing, requestedModel: string, re
   let estimated = false;
   const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const a of attempts) {
-    const c = computeLlmCost(pricing, a.model, {
+    const c = computeLlmCost(pricing, a.priceKey, {
       inputTokens: a.input,
       outputTokens: a.output,
       cacheReadTokens: a.cacheRead,
@@ -147,7 +156,11 @@ export function costOfResponse(pricing: ModelPricing, requestedModel: string, re
     totals.cacheRead += a.cacheRead;
     totals.cacheWrite += a.cacheCreation;
   }
-  return { usd: Math.round(usd * 1e8) / 1e8, estimated, totals };
+  // The served name is only checked for consistency: same model, or a known alias of it.
+  const servedKey = res.model ? priceKeyForServedModel(pricing, res.model) : requestedModel;
+  const servedMismatch =
+    Boolean(res.model) && res.model !== requestedModel && servedKey !== requestedModel;
+  return { usd: Math.round(usd * 1e8) / 1e8, estimated, totals, servedMismatch };
 }
 
 function textOf(res: LlmResponse): string {
@@ -301,11 +314,18 @@ export class LlmClient {
       const latencyMs = Date.now() - started;
 
       const cost = costOfResponse(this.deps.pricing, input.model, res);
+      if (cost.servedMismatch) {
+        log.warn(
+          { requestedModel: input.model, servedModel: res.model },
+          'provider served a different model than requested (not a known alias); priced as requested',
+        );
+      }
       totalCost += cost.usd;
       await finalizeCost(this.deps.db, reservation.id, {
         costUsd: round8(cost.usd * factor),
         rawCostUsd: cost.usd,
-        model: res.model,
+        // The model the price was taken from (= requested); the served name stays in llm_calls.
+        model: input.model,
         estimated: cost.estimated,
         inputTokens: cost.totals.input,
         outputTokens: cost.totals.output,
