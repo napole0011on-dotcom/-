@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --conditions=@cms/source src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "panel:password": "tsx --conditions=@cms/source src/panel/password-cli.ts"
   },
   "dependencies": {
     "@cms/agents": "workspace:*",

@@ -6,32 +6,39 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { hashPassword } from '@cms/core';
 
-function ask(question: string): Promise<string> {
+const MIN_LENGTH = 8;
+
+async function main() {
   let muted = false;
+  // Echo prompts, hide what the user types.
   const output = new Writable({
     write(chunk: Buffer, _enc, cb) {
       if (!muted) process.stdout.write(chunk);
       cb();
     },
   });
-  const rl = createInterface({ input: process.stdin, output, terminal: true });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      process.stdout.write('\n');
-      resolve(answer);
-    });
+  // One interface for both questions: with piped input a second interface would lose buffered lines.
+  const rl = createInterface({ input: process.stdin, output, terminal: process.stdin.isTTY });
+  const lines = rl[Symbol.asyncIterator]();
+  const ask = async (question: string) => {
+    muted = false;
+    output.write(question);
     muted = true;
-  });
-}
-
-async function main() {
-  const first = await ask('Пароль для панели (не отображается): ');
-  const second = await ask('Повторите пароль: ');
-  if (first !== second) throw new Error('Пароли не совпадают');
-  const hash = await hashPassword(first);
-  console.log('\nДобавьте эту строку в .env (замените, если такая уже есть):\n');
-  console.log(`PANEL_PASSWORD_HASH=${hash}`);
+    const line: IteratorResult<string> = await lines.next();
+    process.stdout.write('\n');
+    return line.done ? '' : line.value;
+  };
+  try {
+    const first = await ask('Пароль для панели (не отображается): ');
+    if (first.length < MIN_LENGTH) throw new Error(`Пароль короче ${MIN_LENGTH} символов`);
+    const second = await ask('Повторите пароль: ');
+    if (first !== second) throw new Error('Пароли не совпадают');
+    const hash = await hashPassword(first);
+    console.log('\nДобавьте эту строку в .env (замените, если такая уже есть):\n');
+    console.log(`PANEL_PASSWORD_HASH=${hash}`);
+  } finally {
+    rl.close();
+  }
 }
 
 main().catch((err: unknown) => {

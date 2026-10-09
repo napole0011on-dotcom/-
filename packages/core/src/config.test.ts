@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, describeConfig, loadConfig } from './config.js';
+import { ConfigError, describeConfig, loadConfig, requirePanel } from './config.js';
 
 const base = {
   POSTGRES_USER: 'app',
@@ -189,5 +189,28 @@ describe('loadConfig', () => {
       expect(c.llm.rateLimit).toEqual({ perMinute: 60, perHour: 1800 });
       expect(c.llm.structuredOutputs).toBe(false);
     });
+  });
+
+  it('panel: loopback-only host, session defaults, hash required only for the panel', () => {
+    const c = loadConfig(base, '/repo');
+    expect(c.api.host).toBe('127.0.0.1');
+    expect(c.panel).toMatchObject({
+      sessionIdleMinutes: 30,
+      sessionMaxHours: 12,
+      loginMaxAttempts: 5,
+      loginLockMinutes: 5,
+    });
+    expect(errorOf(() => requirePanel(c)).message).toContain('pnpm panel:password');
+    expect(errorOf(() => loadConfig({ ...base, API_HOST: '0.0.0.0' }, '/repo')).message).toContain(
+      'API_HOST',
+    );
+    expect(
+      errorOf(() => loadConfig({ ...base, PANEL_PASSWORD_HASH: 'plain-password' }, '/repo'))
+        .message,
+    ).toContain('PANEL_PASSWORD_HASH');
+    const hash = 'scrypt:32768:8:1:c2FsdA==:aGFzaA==';
+    const ok = loadConfig({ ...base, PANEL_PASSWORD_HASH: hash }, '/repo');
+    expect(requirePanel(ok).passwordHash).toBe(hash);
+    expect(JSON.stringify(describeConfig(ok))).not.toContain('aGFzaA==');
   });
 });
