@@ -48,6 +48,7 @@ export const AGENT_STATUS: Record<AgentStatus, { label: string; tone: StatusTone
   waiting_approval: { label: 'ждёт согласования', tone: 'accent' },
   error: { label: 'ошибка', tone: 'danger' },
   paused: { label: 'на паузе', tone: 'muted' },
+  disabled: { label: 'выключен', tone: 'danger' },
 };
 
 export const PLATFORM_LABEL: Record<Platform, string> = {
@@ -116,3 +117,10 @@ export function actorLabel(actor: string): string {
   if (actor.startsWith('agent:')) return actor.slice('agent:'.length);
   return actor.replace(/^system:/, 'система: ');
 }
+
+export const ROLE_LABEL: Record<string, string> = {
+  ceo: 'CEO',
+  worker: 'Копирайтер',
+  critic: 'Critic',
+  classifier: 'классификатор',
+};

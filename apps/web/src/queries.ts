@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   api,
   type AgentCard,
+  type AgentSettings,
   type Approvals,
   type LlmStatus,
   type RunCardData,
@@ -56,4 +57,10 @@ export const useRun = (id: string) =>
     queryKey: ['run', id],
     queryFn: () => api.get<RunCardData>(`/api/runs/${id}`),
     refetchInterval: FAST,
+  });
+export const useAgentSettings = (id: string) =>
+  useQuery({
+    queryKey: ['agent-settings', id],
+    queryFn: () => api.get<AgentSettings>(`/api/agents/${id}/settings`),
+    refetchInterval: SLOW,
   });

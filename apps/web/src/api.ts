@@ -34,9 +34,18 @@ export interface LlmStatus {
   models: Record<ModelRole, string>;
   unpricedModels: string[];
   budget: { dailyUsd: number; monthlyUsd: number; taskUsd: number };
+  controls: { allPaused: boolean; changedAt: string | null; changedBy: string | null };
 }
 
-export type AgentStatus = 'idle' | 'working' | 'waiting_approval' | 'error' | 'paused';
+export type AgentStatus = 'idle' | 'working' | 'waiting_approval' | 'error' | 'paused' | 'disabled';
+
+export interface AgentControlsView {
+  paused: boolean;
+  disabled: boolean;
+  allPaused: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
 
 export interface AgentCard {
   id: string;
@@ -54,8 +63,62 @@ export interface AgentCard {
   lastRunId: string | null;
   success: { ok: number; failed: number; rate: number | null };
   spentTodayUsd: number;
-  model: { name: string; role: ModelRole; source: '.env' | 'panel' };
+  model: {
+    name: string;
+    env: string;
+    role: ModelRole;
+    source: '.env' | 'panel';
+    /** Panel model not in the current price list: ignored, .env is used. */
+    ignoredOverride: string | null;
+  };
   promptVersion: string;
+  /** Label of a newer prompt version from the file that is not active yet. */
+  pendingFilePrompt: string | null;
+  controls: AgentControlsView;
+  /** Runs held in the queue because this agent is paused/disabled or everything is stopped. */
+  waitingRuns: number;
+}
+
+export interface PromptVersion {
+  id: string;
+  version: number;
+  label: string;
+  text: string;
+  source: 'file' | 'panel';
+  fileVersion: number | null;
+  createdBy: string;
+  createdAt: string;
+  active: boolean;
+}
+
+export interface AgentSettings {
+  agent: { id: string; name: string; role: string; description: string };
+  controls: AgentControlsView;
+  model: {
+    name: string;
+    env: string;
+    source: '.env' | 'panel';
+    role: ModelRole;
+    allowed: string[];
+    ignoredOverride: string | null;
+  };
+  prompts: {
+    maxBytes: number;
+    active: PromptVersion;
+    pendingFile: PromptVersion | null;
+    versions: PromptVersion[];
+  };
+}
+
+export interface AgentTestResult {
+  ok: boolean;
+  message: string;
+  agent: string;
+  promptVersion: string | null;
+  model: string | null;
+  latencyMs: number;
+  input: unknown;
+  output: unknown;
 }
 
 export interface TaskRow {
@@ -67,6 +130,8 @@ export interface TaskRow {
   createdAt: string;
   statusChangedAt: string;
   spentUsd: number;
+  /** "Копирайтер" / "все агенты остановлены" while a run of the task waits in the queue. */
+  waitingFor: string | null;
 }
 
 export interface Deliverable {
@@ -153,6 +218,7 @@ export interface TaskDetail {
     statusChangedAt: string;
     spentUsd: number;
     budgetUsd: number;
+    waitingFor: string | null;
   };
   actions: TaskActions;
   plans: {
@@ -194,6 +260,7 @@ export interface TaskDetail {
     createdAt: string;
     finishedAt: string | null;
     error: { message?: string } | null;
+    waitingFor: string | null;
   }[];
 }
 

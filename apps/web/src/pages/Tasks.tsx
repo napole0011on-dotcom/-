@@ -32,6 +32,9 @@ export function Tasks() {
                     <span className="muted">{usd(t.spentUsd)}</span>
                   </div>
                   {t.paused && <div className="paused small">⏸ на паузе: {t.pauseReason}</div>}
+                  {t.waitingFor && (
+                    <div className="paused small">⏳ ждёт агента: {t.waitingFor}</div>
+                  )}
                   <div className="muted small">{ago(t.statusChangedAt)}</div>
                 </Link>
               ))}

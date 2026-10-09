@@ -52,6 +52,13 @@ export function TaskPage({ id }: { id: string }) {
         <span>· статус с {dateTime(task.statusChangedAt)}</span>
       </div>
 
+      {task.waitingFor && (
+        <div className="card warn-card">
+          ⏳ Ждёт агента: <b>{task.waitingFor}</b>. Запуск стоит в очереди и продолжится
+          автоматически, когда агента снимут с паузы (раздел «Агенты»).
+        </div>
+      )}
+
       {task.paused && (
         <div className="card warn-card">
           ⏸ Задача на паузе: {task.pauseReason}
@@ -183,7 +190,7 @@ export function TaskPage({ id }: { id: string }) {
                 <td>
                   <Link to={`/runs/${r.id}`}>{r.agent}</Link>
                 </td>
-                <td>{r.status}</td>
+                <td>{r.waitingFor ? `ждёт (${r.waitingFor})` : r.status}</td>
                 <td>{r.attempt}</td>
                 <td>{dateTime(r.createdAt)}</td>
                 <td className="small">{r.error?.message ?? ''}</td>

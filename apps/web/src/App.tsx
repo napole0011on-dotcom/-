@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, setCsrfToken, setUnauthorizedHandler, type LlmStatus, type SessionInfo } from './api';
-import { PROVIDER_LABEL } from './format';
+import { PROVIDER_LABEL, ROLE_LABEL, actorLabel, dateTime } from './format';
 import { useApprovals, useStatus } from './queries';
 import { matchRoute, usePath } from './router';
-import { Button, Link, Loading } from './ui';
+import { Button, ConfirmButton, Link, Loading, useAction } from './ui';
 import { Agents } from './pages/Agents';
 import { Approvals } from './pages/Approvals';
 import { Login } from './pages/Login';
@@ -13,13 +13,6 @@ import { RunPage } from './pages/RunPage';
 import { Spend } from './pages/Spend';
 import { TaskPage } from './pages/TaskPage';
 import { Tasks } from './pages/Tasks';
-
-const ROLE_LABEL: Record<string, string> = {
-  ceo: 'CEO',
-  worker: 'Копирайтер',
-  critic: 'Critic',
-  classifier: 'классификатор',
-};
 
 function modelsLabel(s: LlmStatus): string {
   const names = new Set(Object.values(s.models));
@@ -47,6 +40,47 @@ function LlmBadge() {
       <b>{PROVIDER_LABEL[data.provider] ?? data.provider}</b>
       <span>{modelsLabel(data)}</span>
       {data.unpricedModels.length > 0 && <span className="danger">⚠️ нет цены</span>}
+    </div>
+  );
+}
+
+/** Global pause: confirm before stopping; resume is one click. */
+function StopAllButton() {
+  const { data } = useStatus();
+  const stop = useAction(() => api.post('/api/controls/stop-all'));
+  const resume = useAction(() => api.post('/api/controls/resume-all'));
+  if (!data) return null;
+  if (data.controls.allPaused) {
+    return (
+      <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
+        ▶ Продолжить всё
+      </Button>
+    );
+  }
+  return (
+    <ConfirmButton
+      label="Остановить всё"
+      variant="danger"
+      title="Остановить всех агентов?"
+      text="Новые запуски всех агентов будут ждать в очереди; те, что уже идут, доработают. Задачи не теряются: после «Продолжить всё» очередь разберётся автоматически."
+      confirmLabel="Да, остановить"
+      danger
+      busy={stop.isPending}
+      onConfirm={() => stop.mutate()}
+    />
+  );
+}
+
+function StoppedBanner() {
+  const { data } = useStatus();
+  if (!data?.controls.allPaused) return null;
+  return (
+    <div className="banner">
+      ⏸ Все агенты остановлены
+      {data.controls.changedBy
+        ? ` (${actorLabel(data.controls.changedBy)}, ${dateTime(data.controls.changedAt)})`
+        : ''}
+      . Новые запуски ждут в очереди.
     </div>
   );
 }
@@ -87,9 +121,7 @@ function Header({ path, onLogout }: { path: string; onLogout: () => void }) {
           <Link to="/tasks/new" className="btn btn-primary">
             + Задача
           </Link>
-          <Button variant="danger" disabled title="Будет в шаге 2: глобальная пауза всех агентов">
-            Остановить всё
-          </Button>
+          <StopAllButton />
           <Button variant="ghost" onClick={onLogout}>
             Выйти
           </Button>
@@ -161,6 +193,7 @@ export function App() {
     <>
       <Header path={path} onLogout={logout} />
       <main className="main">
+        <StoppedBanner />
         <Page path={path} />
       </main>
     </>
