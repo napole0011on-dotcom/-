@@ -199,6 +199,27 @@ describe('web panel API (Postgres)', () => {
       expect((await get(b, '/api/agents')).statusCode).toBe(401);
     });
 
+    it('background polling does not extend the idle timeout, owner activity does', async () => {
+      await t.db.delete(schema.panelSessions);
+      const s = await loginOk();
+      const seen = async () =>
+        (await t.db.select({ at: schema.panelSessions.lastSeenAt }).from(schema.panelSessions))[0]!
+          .at;
+      await t.db
+        .update(schema.panelSessions)
+        .set({ lastSeenAt: sql`now() - interval '10 minutes'` });
+      const before = await seen();
+      expect((await get(s, '/api/agents')).statusCode).toBe(200);
+      expect(await seen()).toEqual(before);
+      const active = await app.inject({
+        method: 'GET',
+        url: '/api/agents',
+        headers: { cookie: s.cookie, 'x-panel-activity': '1' },
+      });
+      expect(active.statusCode).toBe(200);
+      expect((await seen()).getTime()).toBeGreaterThan(before.getTime());
+    });
+
     it('state changes need the CSRF header and an allowed Origin', async () => {
       const s = await loginOk();
       const brief = { brief: 'Пост про осеннее меню' };

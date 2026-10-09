@@ -83,7 +83,10 @@ export async function registerPanel(app: FastifyInstance, d: PanelDeps): Promise
       }
     }
     if (req.url === '/api/login') return;
-    const session = await touchSession(d.db, d.panel, req.cookies[SESSION_COOKIE]);
+    // The panel polls every few seconds; only real owner activity (clicks, typing — marked by the
+    // client with X-Panel-Activity) or a state change extends the idle timeout.
+    const activity = MUTATING.has(req.method) || req.headers['x-panel-activity'] === '1';
+    const session = await touchSession(d.db, d.panel, req.cookies[SESSION_COOKIE], activity);
     if (!session) return reply.code(401).send({ error: 'Нужно войти' });
     if (MUTATING.has(req.method)) {
       const header = req.headers['x-csrf-token'];

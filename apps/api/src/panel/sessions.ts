@@ -102,6 +102,8 @@ export async function touchSession(
   db: Db,
   cfg: PanelConfig,
   sessionToken: string | undefined,
+  /** Only owner activity extends the idle deadline; background polling does not. */
+  activity = true,
   now = new Date(),
 ): Promise<Session | null> {
   if (!sessionToken) return null;
@@ -116,14 +118,17 @@ export async function touchSession(
     await db.delete(panelSessions).where(sql`${panelSessions.tokenHash} = ${hash}`);
     return null;
   }
-  await db
-    .update(panelSessions)
-    .set({ lastSeenAt: now })
-    .where(sql`${panelSessions.tokenHash} = ${hash}`);
+  if (activity) {
+    await db
+      .update(panelSessions)
+      .set({ lastSeenAt: now })
+      .where(sql`${panelSessions.tokenHash} = ${hash}`);
+  }
+  const seen = activity ? now : s.lastSeenAt;
   return {
     csrfToken: s.csrfToken,
     expiresAt: s.expiresAt,
-    idleExpiresAt: new Date(now.getTime() + cfg.sessionIdleMinutes * 60_000),
+    idleExpiresAt: new Date(seen.getTime() + cfg.sessionIdleMinutes * 60_000),
   };
 }
 
