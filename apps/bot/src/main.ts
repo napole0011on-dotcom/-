@@ -9,11 +9,12 @@ import {
 } from '@cms/core';
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
-import { LlmClient, RunQueue, createAnthropicTransport, runMaintenance } from '@cms/engine';
+import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
 import { MockLlmTransport, Workflow, loadBrandProfileFile, upsertBrand } from '@cms/agents';
 import { makeActions } from './actions.js';
 import { createBot } from './bot.js';
 import { cb } from './callbacks.js';
+import { describeLlmSetup } from './status.js';
 import { TelegramChannel } from './telegram-channel.js';
 
 /**
@@ -55,9 +56,7 @@ async function main() {
   let brandId = brand.id;
 
   const transport =
-    config.llm.provider === 'anthropic'
-      ? createAnthropicTransport(config.llm)
-      : new MockLlmTransport();
+    config.llm.provider === 'mock' ? new MockLlmTransport() : createLlmTransport(config.llm);
   const queueRef: { q?: RunQueue } = {};
   const enqueue = (id: string) => queueRef.q!.enqueue(id);
 
@@ -114,6 +113,7 @@ async function main() {
     brandFile: config.brandProfileFile,
     budget,
     logger,
+    llm: { provider: config.llm.provider, costSafetyFactor: config.llm.costSafetyFactor },
   });
   const bot = createBot(telegram.botToken, telegram.ownerId, actions, logger);
 
@@ -128,7 +128,12 @@ async function main() {
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
   await channel.send({
-    text: `✅ Бот запущен. LLM: ${config.llm.provider === 'anthropic' ? 'Anthropic (реальные вызовы, расходы считаются)' : 'mock (без вызовов API, $0)'}. Бренд: ${brand.name}, профиль v${brand.profileVersion}. Лимиты: задача $${config.budget.taskUsd}, день $${config.budget.dailyUsd}, месяц $${config.budget.monthlyUsd}.`,
+    text: [
+      '✅ Бот запущен.',
+      describeLlmSetup(config, pricing),
+      `Бренд: ${brand.name}, профиль v${brand.profileVersion}.`,
+      `Лимиты бюджета: задача $${config.budget.taskUsd}, день $${config.budget.dailyUsd}, месяц $${config.budget.monthlyUsd}.`,
+    ].join('\n'),
   });
   await bot.start({
     drop_pending_updates: false,

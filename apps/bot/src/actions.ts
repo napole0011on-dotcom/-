@@ -1,6 +1,6 @@
 import type { Logger } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import { budgetStatus, type BudgetContext } from '@cms/engine';
+import { budgetStatus, parseUsd, reconcileWallet, type BudgetContext } from '@cms/engine';
 import { getBrand, loadBrandProfileFile, upsertBrand, type Workflow } from '@cms/agents';
 import type { BotActions } from './bot.js';
 
@@ -28,6 +28,7 @@ export function makeActions(deps: {
   brandFile: string;
   budget: BudgetContext;
   logger: Logger;
+  llm: { provider: string; costSafetyFactor: number };
 }): BotActions {
   const { db, workflow } = deps;
   return {
@@ -81,6 +82,21 @@ export function makeActions(deps: {
         );
       }
       return lines.join('\n');
+    },
+
+    async reconcile(text, actor) {
+      if (deps.llm.provider === 'mock') return 'Сверка не нужна: LLM_PROVIDER=mock, расходов нет.';
+      const balance = parseUsd(text);
+      if (balance === null)
+        return 'Формат: /reconcile 12.34 — баланс кошелька из личного кабинета провайдера, в долларах.';
+      const r = await reconcileWallet(db, {
+        brandId: deps.brandId(),
+        provider: deps.llm.provider,
+        balanceUsd: balance,
+        costSafetyFactor: deps.llm.costSafetyFactor,
+        actor,
+      });
+      return r.message;
     },
 
     async findTask(prefix) {

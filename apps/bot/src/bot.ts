@@ -25,6 +25,7 @@ export interface BotActions {
   reloadBrand(): Promise<string>;
   listTasks(): Promise<string>;
   findTask(idPrefix: string): Promise<string | null>;
+  reconcile(balanceText: string, actor: Actor): Promise<string>;
 }
 
 type Pending = { kind: 'plan_change'; taskId: string } | { kind: 'revise'; artifactId: string };
@@ -35,6 +36,7 @@ const HELP = [
   '/tasks — последние задачи и их статусы',
   '/cancel <id> — отменить задачу (первые 8 символов id)',
   '/brand — профиль бренда; /brand reload — перечитать YAML',
+  '/reconcile 12.34 — сверить учёт расходов с балансом кошелька провайдера',
   '/skip — отменить ввод комментария',
 ].join('\n');
 
@@ -72,6 +74,9 @@ export function createBot(
     );
   });
   bot.command('tasks', async (ctx) => ctx.reply(await actions.listTasks()));
+  bot.command('reconcile', async (ctx) =>
+    ctx.reply(await actions.reconcile(ctx.match.trim(), actor)),
+  );
   bot.command('cancel', async (ctx) => {
     const id = await actions.findTask(ctx.match.trim());
     if (!id) return ctx.reply('Задача не найдена. Формат: /cancel <первые символы id из /tasks>');

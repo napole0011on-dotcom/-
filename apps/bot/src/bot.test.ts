@@ -34,6 +34,7 @@ function harness() {
     reloadBrand: () => Promise.resolve('reloaded'),
     listTasks: () => Promise.resolve('tasks'),
     findTask: () => Promise.resolve(null),
+    reconcile: (text: string) => (done.push(`reconcile:${text}`), Promise.resolve('ok')),
   };
   const bot = createBot('123:TEST', OWNER, actions, logger);
   bot.botInfo = {
@@ -143,6 +144,12 @@ describe('bot', () => {
       'budget:5',
       'all',
     ]);
+  });
+
+  it('/reconcile passes the balance text through', async () => {
+    const h = harness();
+    await h.text(OWNER, '/reconcile 12.34');
+    expect(h.done).toEqual(['reconcile:12.34']);
   });
 
   it('/skip drops a pending comment; the next text is a new brief', async () => {
