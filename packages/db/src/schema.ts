@@ -9,6 +9,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -86,6 +87,8 @@ export const runs = pgTable(
     output: jsonb('output'),
     error: jsonb('error'),
     promptVersion: text('prompt_version'),
+    /** Set while the run waits in the queue for a paused/disabled agent, e.g. "agent:copywriter" or "all". */
+    waitingFor: text('waiting_for'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
@@ -361,4 +364,64 @@ export const panelLoginState = pgTable('panel_login_state', {
   failedCount: integer('failed_count').notNull().default(0),
   lockedUntil: timestamp('locked_until', { withTimezone: true }),
   updatedAt: updatedAt(),
+});
+
+export const promptSource = pgEnum('prompt_source', ['file', 'panel']);
+
+/**
+ * Every version of every agent's system prompt. The DB is the source of truth once seeded;
+ * prompts/*.md files only add versions (never activate them by themselves, except the very first).
+ */
+export const promptVersions = pgTable(
+  'prompt_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    agent: text('agent').notNull(),
+    /** 1, 2, 3, ... per agent; the label is "<agent>@<version>#<hash>". */
+    version: integer('version').notNull(),
+    text: text('text').notNull(),
+    /** First 8 hex chars of sha256(text). */
+    hash: text('hash').notNull(),
+    source: promptSource('source').notNull(),
+    /** "version: N" from the file front matter (file versions only). */
+    fileVersion: integer('file_version'),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('prompt_versions_agent_version_uq').on(t.brandId, t.agent, t.version),
+    uniqueIndex('prompt_versions_agent_hash_uq').on(t.brandId, t.agent, t.hash),
+  ],
+);
+
+/** Owner's per-agent controls: pause, on/off, model override, active prompt. */
+export const agentSettings = pgTable(
+  'agent_settings',
+  {
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    agent: text('agent').notNull(),
+    paused: boolean('paused').notNull().default(false),
+    disabled: boolean('disabled').notNull().default(false),
+    /** null = model from LLM_MODEL_* in .env. */
+    modelOverride: text('model_override'),
+    activePromptId: uuid('active_prompt_id').references(() => promptVersions.id),
+    updatedBy: text('updated_by'),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.brandId, t.agent] })],
+);
+
+/** "Stop everything": while all_paused is true no new run starts (running ones finish). */
+export const globalControls = pgTable('global_controls', {
+  brandId: uuid('brand_id')
+    .primaryKey()
+    .references(() => brands.id),
+  allPaused: boolean('all_paused').notNull().default(false),
+  changedBy: text('changed_by'),
+  changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
 });

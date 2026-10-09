@@ -36,6 +36,13 @@
       "when": 1791549991275,
       "tag": "0004_panel_and_invocations",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791554116820,
+      "tag": "0005_agent_controls",
+      "breakpoints": true
     }
   ]
 }
