@@ -10,7 +10,9 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 | ------------------------------------------------------- | -------------------------- |
 | 0. Каркас                                               | готово                     |
 | 1. Ядро (модели, автомат статусов, очередь, LLM-клиент) | готово                     |
-| 2. Copywriter + Critic + CEO + Telegram-гейты           | готово, ждёт подтверждения |
+| 2. Copywriter + Critic + CEO + Telegram-гейты           | готово                     |
+| 2.5 Веб-панель, шаг 1 (просмотр, согласование, расходы) | готово, ждёт подтверждения |
+| 2.5 Веб-панель, шаг 2 (управление агентами, промпты)    | не начат                   |
 | 3. Image (Magnific), Video Ideas, SEO, DAG              | не начат                   |
 | 4. Instagram Analyst (CSV → Graph API)                  | не начат                   |
 | 5. Панель, эксплуатация, деплой                         | не начат                   |
@@ -20,21 +22,31 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 
 TypeScript (strict) · Node.js ≥ 22.12 · pnpm workspaces · PostgreSQL 16 · Drizzle ORM (+ свой
 раннер миграций) · Fastify · pino · Zod 4 · Vitest · ESLint 10 + Prettier · Docker Compose
-(Postgres + SeaweedFS как S3) · pg-boss 12 (очередь в Postgres) · @anthropic-ai/sdk. Дальше по плану: grammY,
-React + Vite, sharp.
+(Postgres + SeaweedFS как S3) · pg-boss 12 (очередь в Postgres) · @anthropic-ai/sdk · grammY ·
+React 19 + Vite 8 + TanStack Query (панель). Дальше по плану: sharp.
 
 ## Структура
 
 ```
-apps/api            Fastify HTTP API (пока только /health)
+apps/api            Fastify: /health + API панели (только 127.0.0.1); раздаёт собранную apps/web/dist
+  src/panel/routes.ts   эндпоинты /api/*: Origin + сессия + X-CSRF-Token на изменения, audit_log, зеркало в Telegram
+  src/panel/sessions.ts вход (scrypt-хэш из .env, блокировка после N ошибок), сессии в БД (sha256 токена), таймауты
+  src/panel/queries.ts  чтение для экранов: карточки агентов, доска, задача, согласование, запуск, расходы
+  src/panel/password-cli.ts  pnpm panel:password — печатает PANEL_PASSWORD_HASH для .env
+apps/web            панель: React + Vite + TanStack Query, свой роутер на History API (src/router.ts)
+  src/api.ts           fetch-клиент: CSRF-токен в памяти, X-Panel-Activity, типы ответов
+  src/queries.ts       опрос: 3 с (агенты, задачи, согласование), 10 с (расходы, статус); пауза на скрытой вкладке
+  src/pages/*          Login, Agents, Tasks, TaskPage, Approvals, RunPage, Spend, NewTask
 apps/bot            Telegram-бот + воркер очереди + обслуживание в одном процессе (pnpm dev:bot)
   src/bot.ts           белый список, команды, кнопки, ввод комментариев (ForceReply)
-  src/callbacks.ts     формат callback_data (≤ 64 байт)
   src/telegram-channel.ts, format.ts  сообщения гейтов (HTML, ≤ 4096 символов)
   src/smoke.ts         pnpm smoke:llm — первый реальный вызов с лимитом $0.02
 packages/agents     агенты и сценарий
   prompts/*.md         системные промпты (front matter version: N); ai-cliches.ru.txt — штампы
   src/agents/          ceo, copywriter, critic — вход/выход по Zod, без побочных эффектов
+  src/registry.ts      реестр агентов (имя, роль, модельная роль, промпт) — карточки панели строятся из него
+  src/invocations.ts   invokeAgent() — каждый вызов агента пишется в agent_invocations (версия промпта, модель, $)
+  src/telegram-callbacks.ts  формат callback_data (≤ 64 байт), общий для бота и зеркала панели
   src/workflow.ts      оркестратор: бриф → план → гейт 1 → copy⇄critic → гейт 2 → правки → экспорт
   src/schemas.ts       схемы и правила площадок; src/lint.ts — детерминированный поиск штампов
   src/mock-llm.ts      LLM_PROVIDER=mock: правдоподобные ответы без API
@@ -57,7 +69,7 @@ config/model-pricing.tokenharbor.json  цены шлюза; бесплатная
 scripts/            кроссплатформенные node-скрипты (никакого bash)
 ```
 
-Ещё не созданы (появятся на своих этапах): `apps/web` (этап 5).
+Ещё не созданы: контейнеры для api/bot/web (этап 5).
 
 ## Команды (работают одинаково в PowerShell, cmd и bash)
 
@@ -69,7 +81,9 @@ pnpm db:migrate          # применить все миграции
 pnpm db:rollback         # откатить последнюю; pnpm db:rollback --steps 2 — две
 pnpm db:status
 pnpm db:generate         # drizzle-kit generate после изменения schema.ts → потом написать .down.sql
-pnpm dev:api             # API с перезапуском, из исходников
+pnpm dev:api             # API + панель-API с перезапуском, из исходников (нужен PANEL_PASSWORD_HASH)
+pnpm dev:web             # панель на http://127.0.0.1:5173 (Vite, /api проксируется на :3000)
+pnpm panel:password      # спросит пароль, напечатает PANEL_PASSWORD_HASH=... для .env
 pnpm build && pnpm start:api
 pnpm lint                # eslint + prettier --check
 pnpm format
@@ -112,33 +126,45 @@ pnpm smoke:llm           # 2 реальных вызова через LLM_PROVID
 - Цена — только по модели из ЗАПРОСА, не по `response.model` (шлюз отвечает `claude-haiku-5.5` на `claude-haiku-5.5:free`). `aliases` в прайсе — только чтобы узнать имя из ответа; запрос под именем алиаса ими не тарифицируется. Исключение — `fallback_message` в `usage.iterations` (refusal fallback Anthropic): по своей модели.
 - Шлюзу не отправлять бета-поля (`betas`, `fallbacks`) и не использовать `client.beta.*` (добавляет `?beta=true`).
 - Вывод «кэш работает» — только по `cache_read_input_tokens > 0` на реальном ответе провайдера.
+- Панель и бот вызывают одни и те же методы `Workflow` (decidePlan, decideArtifact, approveAll, rejectPackage,
+  reopenPackage, cancelTask, approveBudget). Своей логики решений в API нет; actor панели — `human / panel:owner`.
+- Новый изменяющий эндпоинт панели — только POST под `/api/`: preHandler проверяет Origin, сессию и CSRF.
+  Ответ — без секретов (тест `panel.int.test.ts` это проверяет).
+- `apps/web` проверяется отдельным `tsconfig.json` (DOM, bundler); в `tsconfig.typecheck.json` он исключён.
 
 ## Принятые решения
 
-| Решение                                                                                | Почему                                                                                                                                                                   |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Drizzle, а не Prisma                                                                   | Схема в TS, SQL почти как есть, без отдельного движка и шага генерации клиента; удобные транзакции и блокировки строк для автомата статусов                              |
-| Свой раннер миграций поверх SQL от drizzle-kit                                         | У drizzle-kit нет down-миграций, а откат — требование. Раннер: advisory lock, транзакция на миграцию, checksum с нормализацией CRLF                                      |
-| SeaweedFS вместо MinIO                                                                 | MinIO перестал публиковать community-образы на Docker Hub (`minio/minio` недоступен). SeaweedFS `weed mini` — S3-совместимый, ключи из env, анонимный доступ закрыт      |
-| Postgres 16                                                                            | Поддерживается до ноября 2028, образ уже стабилен; переход на 17 — отдельным решением                                                                                    |
-| TypeScript 6.0, не 7                                                                   | typescript-eslint поддерживает TS < 6.1                                                                                                                                  |
-| DB-подключение собирается из `POSTGRES_*`, а не из `DATABASE_URL`                      | Один источник правды для compose и приложения, нельзя рассинхронизировать пароль                                                                                         |
-| Пустая переменная в `.env` = не задана                                                 | Скопированный `.env.example` даёт понятную ошибку «X is required», а не странное поведение                                                                               |
-| `PUBLISH_ENABLED=true` запрещено при `DRY_RUN=true`                                    | Публикация включается только двумя явными действиями                                                                                                                     |
-| Порты compose слушают только 127.0.0.1                                                 | БД и хранилище не торчат в сеть                                                                                                                                          |
-| `.gitattributes` `eol=lf`                                                              | Одинаковые файлы на Windows и Linux; checksum миграций всё равно нормализует CRLF                                                                                        |
-| Приложения пока не в Docker                                                            | На этапе 0 compose — только инфраструктура; контейнеры для api/bot/web — этап 5 (деплой)                                                                                 |
-| CI: Linux (всё + интеграция) и Windows (lint/typecheck/unit/build)                     | Пользователь работает на Windows 11 — ловим несовместимость скриптов автоматически                                                                                       |
-| Structured outputs (`output_config.format`), а не tool use                             | У Opus 5.5 / Sonnet 5.5 принудительный `tool_choice` даёт 400; structured outputs гарантируют JSON, Zod проверяет смысловые ограничения, до 2 повторов с текстом ошибок  |
-| Thinking не передаём, `effort` — по агенту                                             | У Opus 5.5 thinking нельзя выключить (400), управление глубиной — через effort (по умолчанию medium)                                                                     |
-| `fallbacks: "default"` при отказе модели (LLM_REFUSAL_FALLBACK)                        | Рекомендация Anthropic; стоимость считается по `usage.iterations` — каждая попытка по цене своей модели                                                                  |
-| Ретраи HTTP — SDK, ретраи задач — pg-boss                                              | SDK сам повторяет 408/409/429/5xx с backoff; после исчерпания ошибка классифицируется: временная → pg-boss повторит задачу с экспоненциальным backoff, затем dead-letter |
-| Резерв бюджета до вызова (worst case) под advisory lock                                | Параллельные вызовы не могут вместе превысить лимит; пауза наступает, когда _следующий_ вызов может выйти за 100%                                                        |
-| Пауза — флаг на задаче, а не статус                                                    | После подтверждения задача продолжается с того же места                                                                                                                  |
-| DB-триггеры: смена статуса только через transitionTask, audit_log только на добавление | Правило держится даже при ошибке в коде                                                                                                                                  |
-| Пакет `engine` отдельно от `core`                                                      | `core` без зависимостей от БД — его смогут импортировать бот и веб                                                                                                       |
-| Цены моделей в `config/model-pricing.json`                                             | Цены меняются чаще релизов; неизвестная модель считается по самым дорогим ценам с пометкой estimated                                                                     |
-| Часовой пояс бюджета `APP_TIMEZONE` (по умолчанию Europe/Moscow)                       | «Сутки» должны совпадать с днём владельца, а не с UTC                                                                                                                    |
+| Решение                                                                                 | Почему                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Drizzle, а не Prisma                                                                    | Схема в TS, SQL почти как есть, без отдельного движка и шага генерации клиента; удобные транзакции и блокировки строк для автомата статусов                              |
+| Свой раннер миграций поверх SQL от drizzle-kit                                          | У drizzle-kit нет down-миграций, а откат — требование. Раннер: advisory lock, транзакция на миграцию, checksum с нормализацией CRLF                                      |
+| SeaweedFS вместо MinIO                                                                  | MinIO перестал публиковать community-образы на Docker Hub (`minio/minio` недоступен). SeaweedFS `weed mini` — S3-совместимый, ключи из env, анонимный доступ закрыт      |
+| Postgres 16                                                                             | Поддерживается до ноября 2028, образ уже стабилен; переход на 17 — отдельным решением                                                                                    |
+| TypeScript 6.0, не 7                                                                    | typescript-eslint поддерживает TS < 6.1                                                                                                                                  |
+| DB-подключение собирается из `POSTGRES_*`, а не из `DATABASE_URL`                       | Один источник правды для compose и приложения, нельзя рассинхронизировать пароль                                                                                         |
+| Пустая переменная в `.env` = не задана                                                  | Скопированный `.env.example` даёт понятную ошибку «X is required», а не странное поведение                                                                               |
+| `PUBLISH_ENABLED=true` запрещено при `DRY_RUN=true`                                     | Публикация включается только двумя явными действиями                                                                                                                     |
+| Порты compose слушают только 127.0.0.1                                                  | БД и хранилище не торчат в сеть                                                                                                                                          |
+| `.gitattributes` `eol=lf`                                                               | Одинаковые файлы на Windows и Linux; checksum миграций всё равно нормализует CRLF                                                                                        |
+| Приложения пока не в Docker                                                             | На этапе 0 compose — только инфраструктура; контейнеры для api/bot/web — этап 5 (деплой)                                                                                 |
+| CI: Linux (всё + интеграция) и Windows (lint/typecheck/unit/build)                      | Пользователь работает на Windows 11 — ловим несовместимость скриптов автоматически                                                                                       |
+| Structured outputs (`output_config.format`), а не tool use                              | У Opus 5.5 / Sonnet 5.5 принудительный `tool_choice` даёт 400; structured outputs гарантируют JSON, Zod проверяет смысловые ограничения, до 2 повторов с текстом ошибок  |
+| Thinking не передаём, `effort` — по агенту                                              | У Opus 5.5 thinking нельзя выключить (400), управление глубиной — через effort (по умолчанию medium)                                                                     |
+| `fallbacks: "default"` при отказе модели (LLM_REFUSAL_FALLBACK)                         | Рекомендация Anthropic; стоимость считается по `usage.iterations` — каждая попытка по цене своей модели                                                                  |
+| Ретраи HTTP — SDK, ретраи задач — pg-boss                                               | SDK сам повторяет 408/409/429/5xx с backoff; после исчерпания ошибка классифицируется: временная → pg-boss повторит задачу с экспоненциальным backoff, затем dead-letter |
+| Резерв бюджета до вызова (worst case) под advisory lock                                 | Параллельные вызовы не могут вместе превысить лимит; пауза наступает, когда _следующий_ вызов может выйти за 100%                                                        |
+| Пауза — флаг на задаче, а не статус                                                     | После подтверждения задача продолжается с того же места                                                                                                                  |
+| DB-триггеры: смена статуса только через transitionTask, audit_log только на добавление  | Правило держится даже при ошибке в коде                                                                                                                                  |
+| Пакет `engine` отдельно от `core`                                                       | `core` без зависимостей от БД — его смогут импортировать бот и веб                                                                                                       |
+| Цены моделей в `config/model-pricing.json`                                              | Цены меняются чаще релизов; неизвестная модель считается по самым дорогим ценам с пометкой estimated                                                                     |
+| Часовой пояс бюджета `APP_TIMEZONE` (по умолчанию Europe/Moscow)                        | «Сутки» должны совпадать с днём владельца, а не с UTC                                                                                                                    |
+| Панель: опрос (3 с / 10 с), а не SSE/WebSocket                                          | Один владелец, данные меняются раз в секунды; опрос проще, переживает перезапуск API, React Query сам ставит паузу на скрытой вкладке                                    |
+| Опрос не продлевает сессию                                                              | Иначе открытая вкладка никогда не «бездействует»; продлевают только изменения и запросы с `X-Panel-Activity: 1` (клик/ввод за последнюю минуту)                          |
+| Хэш пароля `scrypt:N:r:p:salt:hash`, а не `$scrypt$...`                                 | docker compose подставляет `$` в `.env` как переменные и портит строку                                                                                                   |
+| Сессия: cookie HttpOnly + SameSite=Strict, в БД — sha256 токена; CSRF-токен в заголовке | Утечка БД не даёт войти; чужой сайт не может ни прочитать cookie, ни подделать изменяющий запрос (Origin + CSRF)                                                         |
+| Свой роутер (~40 строк) вместо react-router                                             | Пять плоских маршрутов; меньше зависимостей                                                                                                                              |
+| API не выполняет агентов, только ставит задачи в очередь                                | Воркер один — в процессе бота; нет двойной обработки и двух лимитеров запросов                                                                                           |
+| После экспорта пакет нельзя «вернуть»                                                   | Экспорт — внешний побочный эффект; переход exported → awaiting_final_approval удалён из автомата                                                                         |
 
 ## Ответы владельца (зафиксировано)
 
