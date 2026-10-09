@@ -2,7 +2,32 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export type AgentName = 'ceo' | 'copywriter' | 'critic';
+export const AGENT_NAMES = ['ceo', 'copywriter', 'critic'] as const;
+export type AgentName = (typeof AGENT_NAMES)[number];
+
+/** Prompt size limit for versions saved from the panel. */
+export const MAX_PROMPT_BYTES = 32 * 1024;
+
+export const promptHash = (text: string) =>
+  createHash('sha256').update(text).digest('hex').slice(0, 8);
+
+export const promptLabel = (agent: string, version: number | string, hash: string) =>
+  `${agent}@${version}#${hash}`;
+
+/** Normalises a prompt typed in the panel (line endings, outer whitespace). */
+export const normalizePromptText = (text: string) => text.replace(/\r\n/g, '\n').trim();
+
+/** Checks a prompt before it is saved as a version; returns a message for the owner or null. */
+export function validatePromptText(raw: string): string | null {
+  const text = normalizePromptText(raw);
+  if (!text) return 'Промпт пустой';
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > MAX_PROMPT_BYTES)
+    return `Промпт длиннее 32 КБ (сейчас ${(bytes / 1024).toFixed(1)} КБ)`;
+  if (/^---\s*\n/.test(text))
+    return 'Уберите блок «---» в начале (front matter): версия назначается автоматически';
+  return null;
+}
 
 export interface LoadedPrompt {
   agent: AgentName;
@@ -19,10 +44,10 @@ export function parsePrompt(agent: AgentName, raw: string): LoadedPrompt {
   const m = /^---\nversion:\s*(\d+)\s*\n---\n([\s\S]*)$/.exec(text);
   if (!m) throw new Error(`Prompt ${agent}.md must start with "---\\nversion: N\\n---"`);
   const body = m[2]!.trim();
-  const hash = createHash('sha256').update(body).digest('hex').slice(0, 8);
-  return { agent, text: body, version: `${agent}@${m[1]}#${hash}` };
+  return { agent, text: body, version: promptLabel(agent, m[1]!, promptHash(body)) };
 }
 
+/** Reads the prompt FILE. At runtime agents use the active DB version (prompt-store.ts). */
 export function loadPrompt(agent: AgentName, dir: string = PROMPTS_DIR): LoadedPrompt {
   return parsePrompt(agent, readFileSync(path.join(dir, `${agent}.md`), 'utf8'));
 }

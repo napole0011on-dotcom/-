@@ -1,5 +1,5 @@
 import { renderBrandForPrompt } from '../brand.js';
-import { loadClicheList, loadPrompt } from '../prompts.js';
+import { loadClicheList } from '../prompts.js';
 import {
   copywriterOutputSchema,
   type CopyItem,
@@ -28,7 +28,7 @@ export interface CopywriterInput {
 }
 
 export function copywriterSystem(ctx: AgentContext) {
-  const prompt = loadPrompt('copywriter');
+  const prompt = ctx.prompts.copywriter;
   const cliches = loadClicheList();
   return {
     prompt,

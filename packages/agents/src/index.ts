@@ -14,3 +14,6 @@ export * from './workflow.js';
 export * from './registry.js';
 export * from './invocations.js';
 export * from './telegram-callbacks.js';
+export * from './controls.js';
+export * from './prompt-store.js';
+export * from './agent-test.js';

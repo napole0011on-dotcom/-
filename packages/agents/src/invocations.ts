@@ -1,7 +1,6 @@
 import { errorToJson } from '@cms/core';
 import { schema, sql, type DbOrTx } from '@cms/db';
 import type { AgentResult } from './agents/context.js';
-import { loadPrompt } from './prompts.js';
 import type { AgentDefinition } from './registry.js';
 
 const { agentInvocations } = schema;
@@ -11,6 +10,8 @@ export interface InvocationTarget {
   taskId: string | null;
   runId: string | null;
   model: string;
+  /** Active prompt version label at the start of the call. */
+  promptVersion: string;
 }
 
 /**
@@ -31,7 +32,7 @@ export async function invokeAgent<T>(
       agent: def.id,
       taskId: target.taskId,
       runId: target.runId,
-      promptVersion: loadPrompt(def.prompt).version,
+      promptVersion: target.promptVersion,
       model: target.model,
     })
     .returning({ id: agentInvocations.id });

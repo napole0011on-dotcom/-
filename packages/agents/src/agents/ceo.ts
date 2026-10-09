@@ -1,5 +1,4 @@
 import { renderBrandForPrompt } from '../brand.js';
-import { loadPrompt } from '../prompts.js';
 import { CeoPlan } from '../schemas.js';
 import { json, type AgentContext, type AgentResult } from './context.js';
 
@@ -11,7 +10,7 @@ export interface CeoInput {
 
 /** CEO (stage 2: simplified) — turns a brief into a list of deliverables for the copywriter. */
 export async function runCeo(ctx: AgentContext, input: CeoInput): Promise<AgentResult<CeoPlan>> {
-  const prompt = loadPrompt('ceo');
+  const prompt = ctx.prompts.ceo;
   const parts = [`Бриф владельца:\n${input.brief}`];
   if (input.previousPlan) parts.push(`Прошлый план:\n${json(input.previousPlan)}`);
   if (input.ownerComment)

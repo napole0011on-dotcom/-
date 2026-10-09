@@ -27,7 +27,13 @@ import {
   transitionTask,
 } from '@cms/engine';
 import { MockNotifier } from '@cms/providers';
-import { copywriterSystem, getBrand, loadBrandProfileFile, upsertBrand } from '@cms/agents';
+import {
+  activePrompts,
+  copywriterSystem,
+  getBrand,
+  loadBrandProfileFile,
+  upsertBrand,
+} from '@cms/agents';
 
 const SMOKE_LIMIT_USD = 0.02;
 
@@ -83,6 +89,7 @@ async function main() {
     const agentCtx = {
       llm,
       models: config.llm.models,
+      prompts: await activePrompts(db, brand.id),
       brand: await getBrand(db, brand.id),
       taskId,
       runId: null,

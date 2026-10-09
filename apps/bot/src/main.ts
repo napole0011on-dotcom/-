@@ -10,7 +10,13 @@ import {
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
 import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
-import { MockLlmTransport, Workflow, loadBrandProfileFile, upsertBrand } from '@cms/agents';
+import {
+  MockLlmTransport,
+  Workflow,
+  loadBrandProfileFile,
+  syncPromptFiles,
+  upsertBrand,
+} from '@cms/agents';
 import { makeActions } from './actions.js';
 import { createBot } from './bot.js';
 import { cb } from '@cms/agents';
@@ -54,6 +60,10 @@ async function main() {
   const pricing = loadPricing(config.llm.pricingFile);
   const { brand } = await upsertBrand(db, loadBrandProfileFile(config.brandProfileFile));
   let brandId = brand.id;
+  // prompts/*.md -> DB: the first start seeds and activates; later file edits become new
+  // versions that the owner activates in the panel.
+  const promptSync = await syncPromptFiles(db, brand.id);
+  if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
 
   const transport =
     config.llm.provider === 'mock' ? new MockLlmTransport() : createLlmTransport(config.llm);
@@ -82,6 +92,7 @@ async function main() {
       notifier: channel,
       logger,
       staleAfterSeconds: config.queue.runStaleAfterSeconds,
+      gate: (run) => workflow.gate(run),
       pauseButtons: (taskId) => [
         [
           { text: '+$1 и продолжить', data: cb.budget(1, taskId) },
@@ -132,6 +143,11 @@ async function main() {
       '✅ Бот запущен.',
       describeLlmSetup(config, pricing),
       `Бренд: ${brand.name}, профиль v${brand.profileVersion}.`,
+      ...promptSync
+        .filter((p) => !p.activated)
+        .map(
+          (p) => `📝 Есть новая версия промпта из файла: ${p.label} — включить её можно в панели.`,
+        ),
       `Лимиты бюджета: задача $${config.budget.taskUsd}, день $${config.budget.dailyUsd}, месяц $${config.budget.monthlyUsd}.`,
     ].join('\n'),
   });

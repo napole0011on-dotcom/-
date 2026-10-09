@@ -1,7 +1,7 @@
 import { renderBrandForPrompt } from '../brand.js';
 import { EXTERNAL_DATA_RULES, wrapExternalData } from '@cms/engine';
 import { findPhrases, hitsToIssues } from '../lint.js';
-import { loadClicheList, loadPrompt } from '../prompts.js';
+import { loadClicheList } from '../prompts.js';
 import {
   CHECK_NAMES,
   criticOutputSchema,
@@ -57,7 +57,7 @@ export async function runCritic(
   ctx: AgentContext,
   input: CriticInput,
 ): Promise<AgentResult<Verdict[]>> {
-  const prompt = loadPrompt('critic');
+  const prompt = ctx.prompts.critic;
   const cliches = loadClicheList();
   const banned = ctx.brand.profile.bannedWords;
   const ids = input.items.map((i) => i.deliverableId);

@@ -38,6 +38,7 @@ import { runCritic, type Verdict } from './agents/critic.js';
 import { getBrand } from './brand.js';
 import { invokeAgent } from './invocations.js';
 import { agentById } from './registry.js';
+import { AgentControls, makeRunGate } from './controls.js';
 import type { AgentResult } from './agents/context.js';
 import type { OwnerChannel, PackageItemView } from './channel.js';
 import { estimatePlan } from './estimate.js';
@@ -91,7 +92,21 @@ export interface DecisionResult {
 type TaskRow = typeof tasks.$inferSelect;
 
 export class Workflow {
-  constructor(private readonly d: WorkflowDeps) {}
+  /** Owner's agent controls (pause, model, prompts); the panel uses the same instance. */
+  readonly controls: AgentControls;
+  /** Queue gate: a run waits while one of its agents is paused/disabled or everything is stopped. */
+  readonly gate: (run: Run) => Promise<string | null>;
+
+  constructor(private readonly d: WorkflowDeps) {
+    this.controls = new AgentControls({
+      db: d.db,
+      config: d.config,
+      pricing: d.pricing,
+      enqueue: d.enqueue,
+      logger: d.logger,
+    });
+    this.gate = makeRunGate(d.db);
+  }
 
   private get budget(): BudgetContext {
     return { config: this.d.config.budget, timeZone: this.d.config.timezone };
@@ -377,7 +392,7 @@ export class Workflow {
 
   private async planStep(run: Run, task: TaskRow, ctx: AgentContext, ownerComment: string | null) {
     const previous = await latestArtifact(this.d.db, task.id, 'plan');
-    const result = await this.invoke('ceo', run, task, () =>
+    const result = await this.invoke('ceo', run, task, ctx, () =>
       runCeo(ctx, {
         brief: briefText(task),
         ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
@@ -398,7 +413,7 @@ export class Workflow {
     await this.moveTo(task.id, 'planned');
     await this.moveTo(task.id, 'awaiting_plan_approval');
 
-    const estimate = estimatePlan(result.output, this.d.pricing, this.d.config.llm.models);
+    const estimate = estimatePlan(result.output, this.d.pricing, ctx.models);
     const spend = await this.spend(task);
     await this.once(`${run.id}:send-plan`, () =>
       this.d.channel.sendPlan({
@@ -467,7 +482,7 @@ export class Workflow {
 
     for (let round = 0; round <= MAX_CRITIC_REVISIONS && pending.length > 0; round++) {
       if (round > 0) await this.moveTo(task.id, 'revision');
-      const copy = await this.invoke('copywriter', run, task, () =>
+      const copy = await this.invoke('copywriter', run, task, ctx, () =>
         runCopywriter(ctx, {
           brief: briefText(task),
           planSummary: plan.summary,
@@ -477,7 +492,7 @@ export class Workflow {
         }),
       );
       await this.moveTo(task.id, 'in_review');
-      const review = await this.invoke('critic', run, task, () =>
+      const review = await this.invoke('critic', run, task, ctx, () =>
         runCritic(ctx, {
           brief: briefText(task),
           deliverables: pending,
@@ -658,7 +673,13 @@ export class Workflow {
   }
 
   /** Every agent call goes through the registry + invocation log. */
-  private invoke<T>(agentId: string, run: Run, task: TaskRow, fn: () => Promise<AgentResult<T>>) {
+  private invoke<T>(
+    agentId: string,
+    run: Run,
+    task: TaskRow,
+    ctx: AgentContext,
+    fn: () => Promise<AgentResult<T>>,
+  ) {
     const def = agentById(agentId);
     if (!def) throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
     return invokeAgent(
@@ -668,7 +689,8 @@ export class Workflow {
         brandId: task.brandId,
         taskId: task.id,
         runId: run.id,
-        model: this.d.config.llm.models[def.modelRole],
+        model: ctx.models[def.modelRole],
+        promptVersion: ctx.prompts[def.prompt].version,
       },
       fn,
     );
@@ -677,7 +699,8 @@ export class Workflow {
   private async agentContext(run: Run, task: TaskRow, signal: AbortSignal): Promise<AgentContext> {
     return {
       llm: this.d.llm,
-      models: this.d.config.llm.models,
+      models: await this.controls.effectiveModels(task.brandId),
+      prompts: await this.controls.prompts(task.brandId),
       brand: await getBrand(this.d.db, task.brandId),
       taskId: task.id,
       runId: run.id,
