@@ -109,7 +109,7 @@ async function main() {
         });
         console.log(`Request ${n}: answer =`, r.output);
         console.log(
-          `  served by ${r.servedModel}, attempts ${r.attempts}, cost $${r.rawCostUsd.toFixed(6)} (budgeted $${r.costUsd.toFixed(6)})`,
+          `  priced as ${model} (requested); served by ${r.servedModel}; attempts ${r.attempts}; cost $${r.rawCostUsd.toFixed(6)} (budgeted $${r.costUsd.toFixed(6)})`,
         );
       }
     } catch (err) {
@@ -142,6 +142,13 @@ async function main() {
       );
       console.log(`    raw usage: ${JSON.stringify(usage)}`);
     }
+    const okCalls = calls.filter((c) => c.status === 'ok');
+    const second = okCalls[1];
+    console.log(
+      second
+        ? `\nSecond request: cache_read_input_tokens = ${second.cacheReadTokens}, cache_creation_input_tokens = ${second.cacheWriteTokens}`
+        : '\nSecond request did not complete — cache read cannot be checked.',
+    );
     const cacheRead = calls.some((c) => c.cacheReadTokens > 0);
     console.log(
       cacheRead
