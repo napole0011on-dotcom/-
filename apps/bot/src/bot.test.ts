@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createLogger, type Actor } from '@cms/core';
 import type { BotActions } from './bot.js';
 import { createBot } from './bot.js';
-import { cb, parseCallback } from './callbacks.js';
+import { cb, parseCallback } from '@cms/agents';
 import { esc, splitMessage } from './format.js';
 
 const OWNER = 111;
@@ -29,6 +29,8 @@ function harness() {
     ),
     approveAll: () => (done.push('all'), ok('Утверждено: 2')),
     cancelTask: () => (done.push('cancel'), ok('Задача отменена')),
+    rejectPackage: () => (done.push('reject'), ok('Пакет отклонён')),
+    reopenPackage: () => (done.push('reopen'), ok('Пакет снова ждёт вашего решения')),
     approveBudget: (_id, usd) => (done.push(`budget:${usd}`), ok('Добавлено')),
     brandInfo: () => Promise.resolve('brand'),
     reloadBrand: () => Promise.resolve('reloaded'),
@@ -146,6 +148,28 @@ describe('bot', () => {
     ]);
   });
 
+  it('reject asks for confirmation; "No" changes nothing; "Yes" rejects and offers to undo', async () => {
+    const h = harness();
+    await h.press(OWNER, cb.task('rj', UUID));
+    expect(h.done).toEqual([]);
+    const confirm = h.calls.at(-1)!.payload as {
+      text: string;
+      reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] };
+    };
+    expect(confirm.text).toMatch(/Точно отклонить/);
+    const [yes, no] = confirm.reply_markup.inline_keyboard[0]!;
+    await h.press(OWNER, no!.callback_data);
+    expect(h.done).toEqual([]);
+    await h.press(OWNER, yes!.callback_data);
+    expect(h.done).toEqual(['reject']);
+    const after = h.calls.at(-1)!.payload as {
+      reply_markup: { inline_keyboard: { callback_data: string }[][] };
+    };
+    expect(after.reply_markup.inline_keyboard[0]![0]!.callback_data).toBe(cb.task('ro', UUID));
+    await h.press(OWNER, cb.task('ro', UUID));
+    expect(h.done).toEqual(['reject', 'reopen']);
+  });
+
   it('/reconcile passes the balance text through', async () => {
     const h = harness();
     await h.text(OWNER, '/reconcile 12.34');
@@ -173,6 +197,9 @@ describe('callbacks and formatting', () => {
       cb.item('ed', UUID),
       cb.item('re', UUID),
       cb.task('all', UUID),
+      cb.task('rj', UUID),
+      cb.task('ry', UUID),
+      cb.task('ro', UUID),
       cb.task('no', UUID),
       cb.budget(1, UUID),
       cb.budget(5, UUID),

@@ -13,7 +13,7 @@ import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/en
 import { MockLlmTransport, Workflow, loadBrandProfileFile, upsertBrand } from '@cms/agents';
 import { makeActions } from './actions.js';
 import { createBot } from './bot.js';
-import { cb } from './callbacks.js';
+import { cb } from '@cms/agents';
 import { describeLlmSetup } from './status.js';
 import { TelegramChannel } from './telegram-channel.js';
 

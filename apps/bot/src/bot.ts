@@ -1,7 +1,10 @@
 import { Bot, type Context } from 'grammy';
 import type { Actor, Logger } from '@cms/core';
 import type { DecisionResult } from '@cms/agents';
-import { parseCallback } from './callbacks.js';
+import { cb, parseCallback } from '@cms/agents';
+
+/** Placeholder id for the "No" button of the rejection confirmation. */
+const NO_TASK = '00000000-0000-0000-0000-000000000000';
 
 /** What the bot can do; implemented by the Workflow + a few queries (an interface keeps the bot testable). */
 export interface BotActions {
@@ -20,6 +23,8 @@ export interface BotActions {
   ): Promise<DecisionResult>;
   approveAll(taskId: string, actor: Actor): Promise<DecisionResult>;
   cancelTask(taskId: string, actor: Actor): Promise<DecisionResult>;
+  rejectPackage(taskId: string, actor: Actor): Promise<DecisionResult>;
+  reopenPackage(taskId: string, actor: Actor): Promise<DecisionResult>;
   approveBudget(taskId: string, extraUsd: number, actor: Actor): Promise<DecisionResult>;
   brandInfo(): Promise<string>;
   reloadBrand(): Promise<string>;
@@ -94,6 +99,23 @@ export function createBot(
         reply_markup: { force_reply: true },
       });
     }
+    if (c.type === 'task' && c.action === 'reject_ask') {
+      // Destructive: ask once more, like the confirmation dialog in the panel.
+      await ctx.answerCallbackQuery();
+      return ctx.reply(
+        'Точно отклонить весь пакет? Вернуть можно, пока ничего не экспортировано.',
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✖️ Да, отклонить', callback_data: cb.task('ry', c.taskId) },
+                { text: 'Нет', callback_data: cb.task('ro', NO_TASK) },
+              ],
+            ],
+          },
+        },
+      );
+    }
     if (c.type === 'item' && c.action === 'revise') {
       pending.set(ctx.chat!.id, { kind: 'revise', artifactId: c.artifactId });
       await ctx.answerCallbackQuery();
@@ -110,12 +132,20 @@ export function createBot(
           actor,
           c.action === 'approve' ? { variant: c.variant } : {},
         );
-      else if (c.type === 'task')
+      else if (c.type === 'task') {
+        if (c.action === 'reopen' && c.taskId === NO_TASK) {
+          await ctx.answerCallbackQuery({ text: 'Ок, ничего не меняю' });
+          return removeButtons(ctx);
+        }
         result =
           c.action === 'approve_all'
             ? await actions.approveAll(c.taskId, actor)
-            : await actions.cancelTask(c.taskId, actor);
-      else result = await actions.approveBudget(c.taskId, c.extraUsd, actor);
+            : c.action === 'reject'
+              ? await actions.rejectPackage(c.taskId, actor)
+              : c.action === 'reopen'
+                ? await actions.reopenPackage(c.taskId, actor)
+                : await actions.cancelTask(c.taskId, actor);
+      } else result = await actions.approveBudget(c.taskId, c.extraUsd, actor);
     } catch (err) {
       logger.error({ err }, 'callback failed');
       return ctx.answerCallbackQuery({ text: 'Ошибка, попробуйте ещё раз', show_alert: true });
@@ -123,7 +153,17 @@ export function createBot(
     await ctx.answerCallbackQuery({ text: result.message });
     if (result.ok) {
       await removeButtons(ctx);
-      await ctx.reply(`➡️ ${result.message}`);
+      if (c.type === 'task' && c.action === 'reject') {
+        await ctx.reply(`➡️ ${result.message}`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '↩️ Вернуть на согласование', callback_data: cb.task('ro', c.taskId) }],
+            ],
+          },
+        });
+      } else {
+        await ctx.reply(`➡️ ${result.message}`);
+      }
     }
   });
 

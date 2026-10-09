@@ -6,7 +6,11 @@ export type Callback =
   | { type: 'plan'; action: 'approve' | 'change' | 'cancel'; taskId: string }
   | { type: 'item'; action: 'approve'; variant: number | null; artifactId: string }
   | { type: 'item'; action: 'revise' | 'regenerate'; artifactId: string }
-  | { type: 'task'; action: 'approve_all' | 'cancel'; taskId: string }
+  | {
+      type: 'task';
+      action: 'approve_all' | 'cancel' | 'reject_ask' | 'reject' | 'reopen';
+      taskId: string;
+    }
   | { type: 'budget'; extraUsd: number; taskId: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -15,7 +19,8 @@ export const cb = {
   plan: (action: 'ok' | 'ch' | 'no', taskId: string) => `p:${action}:${taskId}`,
   item: (action: 'ok' | 'v1' | 'v2' | 'v3' | 'ed' | 're', artifactId: string) =>
     `a:${action}:${artifactId}`,
-  task: (action: 'all' | 'no', taskId: string) => `t:${action}:${taskId}`,
+  /** rj = ask to confirm rejection, ry = rejection confirmed, ro = reopen (undo rejection). */
+  task: (action: 'all' | 'no' | 'rj' | 'ry' | 'ro', taskId: string) => `t:${action}:${taskId}`,
   budget: (extraUsd: 1 | 5, taskId: string) => `b:${extraUsd}:${taskId}`,
 };
 
@@ -39,6 +44,9 @@ export function parseCallback(data: string): Callback | null {
   if (kind === 't') {
     if (action === 'all') return { type: 'task', action: 'approve_all', taskId: id };
     if (action === 'no') return { type: 'task', action: 'cancel', taskId: id };
+    if (action === 'rj') return { type: 'task', action: 'reject_ask', taskId: id };
+    if (action === 'ry') return { type: 'task', action: 'reject', taskId: id };
+    if (action === 'ro') return { type: 'task', action: 'reopen', taskId: id };
     return null;
   }
   if (kind === 'b' && (action === '1' || action === '5'))

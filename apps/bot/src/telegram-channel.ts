@@ -1,7 +1,7 @@
 import { InlineKeyboard, InputFile, type Api } from 'grammy';
 import type { ExportView, OwnerChannel, PackageView, PlanView } from '@cms/agents';
 import type { NotifierMessage } from '@cms/providers';
-import { cb } from './callbacks.js';
+import { cb } from '@cms/agents';
 import { esc, renderItem, renderPackageHeader, renderPlan } from './format.js';
 
 /** Sends everything to the single owner chat. */
@@ -63,14 +63,11 @@ export class TelegramChannel implements OwnerChannel {
         .text('🔄 Заново', cb.item('re', it.artifactId));
       await this.sendHtml(renderItem(it), kb);
     }
-    if (v.pendingCount > 1) {
-      await this.sendHtml(
-        [`Осталось решить: ${v.pendingCount}.`],
-        new InlineKeyboard()
-          .text('✅ Утвердить всё оставшееся', cb.task('all', v.taskId))
-          .text('✖️ Отменить задачу', cb.task('no', v.taskId)),
-      );
-    }
+    // Whole-package actions, same as in the web panel.
+    const kb = new InlineKeyboard();
+    if (v.pendingCount > 1) kb.text('✅ Утвердить всё оставшееся', cb.task('all', v.taskId)).row();
+    kb.text('✖️ Отклонить пакет', cb.task('rj', v.taskId));
+    await this.sendHtml([`Ждут решения: ${v.pendingCount} из ${v.totalCount}.`], kb);
   }
 
   async sendExport(v: ExportView) {

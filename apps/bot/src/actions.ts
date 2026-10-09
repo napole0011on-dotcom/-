@@ -37,6 +37,8 @@ export function makeActions(deps: {
     decideArtifact: (id, a, actor, opts) => workflow.decideArtifact(id, a, actor, opts),
     approveAll: (id, actor) => workflow.approveAll(id, actor),
     cancelTask: (id, actor) => workflow.cancelTask(id, actor),
+    rejectPackage: (id, actor) => workflow.rejectPackage(id, actor),
+    reopenPackage: (id, actor) => workflow.reopenPackage(id, actor),
     approveBudget: (id, usd, actor) => workflow.approveBudget(id, usd, actor),
 
     async brandInfo() {

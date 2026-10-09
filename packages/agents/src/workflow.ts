@@ -36,6 +36,9 @@ import { runCeo } from './agents/ceo.js';
 import { runCopywriter, type RewriteRequest } from './agents/copywriter.js';
 import { runCritic, type Verdict } from './agents/critic.js';
 import { getBrand } from './brand.js';
+import { invokeAgent } from './invocations.js';
+import { agentById } from './registry.js';
+import type { AgentResult } from './agents/context.js';
 import type { OwnerChannel, PackageItemView } from './channel.js';
 import { estimatePlan } from './estimate.js';
 import { renderPackageMarkdown, writePackage, type ExportItem } from './export.js';
@@ -275,6 +278,62 @@ export class Workflow {
     }
   }
 
+  /**
+   * Gate 2: reject the whole package. Human only, through transitionTask; recorded as a
+   * decision. Can be undone with reopenPackage() as long as nothing was exported.
+   */
+  async rejectPackage(
+    taskId: string,
+    actor: Actor,
+    comment?: string | null,
+  ): Promise<DecisionResult> {
+    const task = await this.task(taskId);
+    if (task.status === 'rejected') return { ok: false, message: 'Пакет уже отклонён' };
+    if (task.status !== 'awaiting_final_approval') {
+      return { ok: false, message: 'Отклонить можно только пакет, который ждёт вашего решения' };
+    }
+    const { recorded } = await recordDecision(this.d.db, {
+      brandId: task.brandId,
+      taskId,
+      gate: 'final',
+      decision: 'rejected',
+      actor,
+      comment: comment ?? null,
+      // One rejection per approval round: the task version changes on every status change.
+      idempotencyKey: `reject:${taskId}:v${task.version}`,
+    });
+    if (!recorded) return { ok: false, message: 'Пакет уже отклонён' };
+    await transitionTask(this.d.db, {
+      taskId,
+      to: 'rejected',
+      actor,
+      reason: 'package rejected',
+      details: { comment: comment ?? null },
+    });
+    return { ok: true, message: 'Пакет отклонён. Вернуть можно, пока ничего не экспортировано.' };
+  }
+
+  /** Undo of a rejection: back to the approval gate. Impossible after export (state machine forbids it). */
+  async reopenPackage(taskId: string, actor: Actor): Promise<DecisionResult> {
+    const task = await this.task(taskId);
+    if (task.status !== 'rejected') {
+      return {
+        ok: false,
+        message:
+          task.status === 'exported'
+            ? 'Пакет уже экспортирован — вернуть нельзя'
+            : 'Пакет не отклонён',
+      };
+    }
+    await transitionTask(this.d.db, {
+      taskId,
+      to: 'awaiting_final_approval',
+      actor,
+      reason: 'rejection undone',
+    });
+    return { ok: true, message: 'Пакет снова ждёт вашего решения' };
+  }
+
   /** Owner approved extra budget after a budget pause: raise the limit, resume, re-queue waiting runs. */
   async approveBudget(taskId: string, extraUsd: number, actor: Actor): Promise<DecisionResult> {
     const task = await this.task(taskId);
@@ -318,11 +377,13 @@ export class Workflow {
 
   private async planStep(run: Run, task: TaskRow, ctx: AgentContext, ownerComment: string | null) {
     const previous = await latestArtifact(this.d.db, task.id, 'plan');
-    const result = await runCeo(ctx, {
-      brief: briefText(task),
-      ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
-      ...(ownerComment ? { ownerComment } : {}),
-    });
+    const result = await this.invoke('ceo', run, task, () =>
+      runCeo(ctx, {
+        brief: briefText(task),
+        ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
+        ...(ownerComment ? { ownerComment } : {}),
+      }),
+    );
     const artifact = await createArtifactVersion(this.d.db, `${run.id}:plan`, {
       brandId: task.brandId,
       taskId: task.id,
@@ -406,20 +467,24 @@ export class Workflow {
 
     for (let round = 0; round <= MAX_CRITIC_REVISIONS && pending.length > 0; round++) {
       if (round > 0) await this.moveTo(task.id, 'revision');
-      const copy = await runCopywriter(ctx, {
-        brief: briefText(task),
-        planSummary: plan.summary,
-        deliverables: pending,
-        rewrites,
-        step: `r${round}`,
-      });
+      const copy = await this.invoke('copywriter', run, task, () =>
+        runCopywriter(ctx, {
+          brief: briefText(task),
+          planSummary: plan.summary,
+          deliverables: pending,
+          rewrites,
+          step: `r${round}`,
+        }),
+      );
       await this.moveTo(task.id, 'in_review');
-      const review = await runCritic(ctx, {
-        brief: briefText(task),
-        deliverables: pending,
-        items: copy.output.items,
-        step: `r${round}`,
-      });
+      const review = await this.invoke('critic', run, task, () =>
+        runCritic(ctx, {
+          brief: briefText(task),
+          deliverables: pending,
+          items: copy.output.items,
+          step: `r${round}`,
+        }),
+      );
 
       const failed: Deliverable[] = [];
       const nextRewrites: Record<string, RewriteRequest> = {};
@@ -590,6 +655,23 @@ export class Workflow {
     });
     if (run.status === 'queued') await this.d.enqueue(run.id);
     return run;
+  }
+
+  /** Every agent call goes through the registry + invocation log. */
+  private invoke<T>(agentId: string, run: Run, task: TaskRow, fn: () => Promise<AgentResult<T>>) {
+    const def = agentById(agentId);
+    if (!def) throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
+    return invokeAgent(
+      this.d.db,
+      def,
+      {
+        brandId: task.brandId,
+        taskId: task.id,
+        runId: run.id,
+        model: this.d.config.llm.models[def.modelRole],
+      },
+      fn,
+    );
   }
 
   private async agentContext(run: Run, task: TaskRow, signal: AbortSignal): Promise<AgentContext> {
