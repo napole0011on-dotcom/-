@@ -158,8 +158,11 @@ pnpm smoke:llm
 ```
 
 Ожидаемо: `Provider: tokenharbor (https://tokenharbor.ai, auth x-api-key)`, `Model: claude-haiku-5.5:free`, два ответа
-(`Request 1`, `Request 2`) с фразой-приветствием, блок `Usage as reported by the provider` с токенами и сырым `usage`
-от шлюза, строка про кэш и `ACTUAL COST ... $0.000000`.
+(`Request 1`, `Request 2`) с фразой-приветствием и строкой
+`priced as claude-haiku-5.5:free (requested); served by claude-haiku-5.5; ... cost $0.000000` (шлюз отвечает именем
+без `:free` — это нормально, цена берётся по модели из запроса), блок `Usage as reported by the provider` с токенами и
+сырым `usage` от шлюза, строка `Second request: cache_read_input_tokens = …`, строка про кэш и
+`ACTUAL COST ... $0.000000`.
 
 - Строка `Prompt cache: NOT confirmed` — значит, шлюз не вернул `cache_read_input_tokens`; кэш считаем
   неподтверждённым (это не ошибка).
