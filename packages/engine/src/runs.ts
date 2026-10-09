@@ -60,6 +60,7 @@ export async function claimRun(
     .update(runs)
     .set({
       status: 'running',
+      waitingFor: null,
       attempt: sql`${runs.attempt} + 1`,
       startedAt: sql`coalesce(${runs.startedAt}, now())`,
       heartbeatAt: sql`now()`,
@@ -102,6 +103,42 @@ export async function requeueRun(db: DbOrTx, id: string, err: unknown): Promise<
     .update(runs)
     .set({ status: 'queued', error: errorToJson(err), updatedAt: sql`now()` })
     .where(sql`${runs.id} = ${id} and ${runs.status} in ('running', 'queued')`);
+}
+
+/**
+ * The run may not start now (its agent is paused/disabled, or everything is stopped): back to
+ * the queue without counting an attempt, marked with what it waits for. It does not fail and
+ * is not retried by the queue; releaseWaitingRuns() delivers it again after "resume".
+ */
+export async function holdRun(db: DbOrTx, id: string, waitingFor: string): Promise<void> {
+  await db
+    .update(runs)
+    .set({
+      status: 'queued',
+      waitingFor,
+      attempt: sql`greatest(${runs.attempt} - 1, 0)`,
+      startedAt: null,
+      heartbeatAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(sql`${runs.id} = ${id} and ${runs.status} = 'running'`);
+}
+
+/**
+ * Re-delivers every held run (after "resume"; also periodically by maintenance as a safety
+ * net). A run whose agent is still paused is simply held again.
+ */
+export async function releaseWaitingRuns(
+  db: DbOrTx,
+  enqueue: (runId: string) => Promise<unknown>,
+): Promise<number> {
+  const held = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(sql`${runs.status} = 'queued' and ${runs.waitingFor} is not null`)
+    .orderBy(runs.createdAt);
+  for (const r of held) await enqueue(r.id);
+  return held.length;
 }
 
 export async function failRun(db: DbOrTx, id: string, err: unknown, dead = false): Promise<void> {

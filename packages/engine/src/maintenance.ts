@@ -3,7 +3,7 @@ import { errorToJson, TransientError, type Logger } from '@cms/core';
 import type { Notifier } from '@cms/providers';
 import { releaseStaleReservations } from './budget.js';
 import { withIdempotency } from './idempotency.js';
-import { findStaleRuns, requeueRun } from './runs.js';
+import { findStaleRuns, releaseWaitingRuns, requeueRun } from './runs.js';
 import { pauseTask } from './transitions.js';
 
 const { tasks } = schema;
@@ -75,6 +75,8 @@ export async function runMaintenance(deps: MaintenanceDeps): Promise<void> {
     await deps.enqueue(run.id);
     deps.logger.warn({ runId: run.id, taskId: run.taskId }, 'stale run re-queued');
   }
+  // Safety net for "resume": runs held for a paused agent are delivered again (held again if still paused).
+  await releaseWaitingRuns(deps.db, deps.enqueue);
   const released = await releaseStaleReservations(deps.db, deps.reservationTtlSeconds);
   if (released > 0) deps.logger.warn({ released }, 'released stale budget reservations');
   try {

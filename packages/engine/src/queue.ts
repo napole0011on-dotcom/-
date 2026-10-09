@@ -17,6 +17,7 @@ import {
   failRun,
   getRun,
   heartbeatRun,
+  holdRun,
   requeueRun,
   type Run,
 } from './runs.js';
@@ -48,16 +49,23 @@ export interface RunDeps {
   pauseButtons?: (taskId: string) => NotifierButton[][];
   /** Re-delivers a run after N seconds (used to honour Retry-After). Set by RunQueue. */
   enqueueAfter?: (runId: string, seconds: number) => Promise<unknown>;
+  /**
+   * Returns what the run waits for (e.g. "agent:copywriter", "all") when it may not start now
+   * (agent paused/disabled, everything stopped), or null. Checked before each start only:
+   * a run that already started is finished normally.
+   */
+  gate?: (run: Run) => Promise<string | null>;
 }
 
 /** Cap on Retry-After re-deliveries per run, so a permanently throttled run still ends in dead letter. */
 export const MAX_DELAYED_RETRIES = 20;
 
-export type RunOutcome = 'succeeded' | 'skipped' | 'paused' | 'failed' | 'retry';
+export type RunOutcome = 'succeeded' | 'skipped' | 'paused' | 'waiting' | 'failed' | 'retry';
 
 /**
  * Executes one delivery of a run job. Safe to call more than once for the same run:
  * claiming is atomic, finished runs are skipped.
+ *  - agent paused       -> run back to queued with waiting_for set (no attempt, no retry)
  *  - success            -> run succeeded
  *  - BudgetExceeded     -> run back to queued, task paused, human notified (no retry)
  *  - transient error    -> run back to queued, error rethrown so the queue retries with backoff
@@ -88,6 +96,13 @@ export async function processRun(
     await requeueRun(db, run.id, new Error('task is paused'));
     log.info('task is paused; run left queued');
     return 'paused';
+  }
+
+  const waitingFor = deps.gate ? await deps.gate(run) : null;
+  if (waitingFor) {
+    await holdRun(db, run.id, waitingFor);
+    log.info({ waitingFor }, 'agent is paused; run waits in the queue');
+    return 'waiting';
   }
 
   const beat = setInterval(
