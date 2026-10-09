@@ -47,11 +47,13 @@ packages/engine     рантайм: переходы статусов, идем�
   src/transitions.ts   transitionTask() — единственный способ сменить tasks.status; pause/resume
   src/idempotency.ts   withIdempotency(key, fn) — побочный эффект ровно один раз
   src/budget.ts        резерв → факт; лимиты задача/день/месяц; предупреждение 80%; доплата только человеком
-  src/llm/             LlmClient.callStructured(), транспорт Anthropic, wrapExternalData()
+  src/llm/             LlmClient.callStructured(), транспорты Anthropic и Token Harbor, RateLimiter, wrapExternalData()
+  src/reconcile.ts     /reconcile — сверка записанных расходов с балансом кошелька провайдера
   src/runs.ts, queue.ts  жизненный цикл запусков агентов, pg-boss, dead-letter
   src/maintenance.ts   зависшие запуски, протухшие резервы, напоминания на гейтах
   src/testkit.ts       хелперы для интеграционных тестов (временная БД, FakeTransport)
-config/model-pricing.json  цены моделей (USD за 1M токенов) — меняются без релиза
+config/model-pricing.json  цены моделей Anthropic (USD за 1M токенов) — меняются без релиза
+config/model-pricing.tokenharbor.json  цены шлюза; бесплатная claude-haiku-5.5:free = 0 (TODO: бесплатна ограниченное время)
 scripts/            кроссплатформенные node-скрипты (никакого bash)
 ```
 
@@ -77,7 +79,7 @@ pnpm test:integration    # нужен pnpm infra:up
 pnpm check               # всё сразу (lint, typecheck, unit, integration, build)
 pnpm demo:core           # демо ядра во временной БД с фейковым LLM (нужен pnpm infra:up)
 pnpm dev:bot             # бот + воркер (нужны TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID)
-pnpm smoke:llm           # один реальный вызов Claude с лимитом $0.02, печатает фактическую стоимость
+pnpm smoke:llm           # 2 реальных вызова через LLM_PROVIDER (anthropic|tokenharbor), лимит $0.02: ответ, usage, кэш, стоимость
 ```
 
 ## Правила кода
@@ -106,6 +108,9 @@ pnpm smoke:llm           # один реальный вызов Claude с лим
 - Агент возвращает только данные. Статусы, артефакты, сообщения владельцу — только в `workflow.ts`.
 - Каждый шаг рана идемпотентен: LLM-вызовы, версии артефактов и сообщения — через ключи от `run.id`.
 - Структурные ограничения схем (`enum`, `minItems`) SDK переносит в описание, API их не гарантирует — проверяет Zod.
+- Модели по ролям — только через `LLM_MODEL_*` в `.env`. Новая модель → цена в файле прайса провайдера, иначе она считается по `unknownModelRates`.
+- Шлюзу не отправлять бета-поля (`betas`, `fallbacks`) и не использовать `client.beta.*` (добавляет `?beta=true`).
+- Вывод «кэш работает» — только по `cache_read_input_tokens > 0` на реальном ответе провайдера.
 
 ## Принятые решения
 

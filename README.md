@@ -114,6 +114,80 @@ pnpm smoke:llm
 
 Если что-то пошло не так — в окне `pnpm dev:bot` будут строки с `"level":"error"` и причиной.
 
+## Подключение Token Harbor (бесплатная модель), Windows, шаг за шагом
+
+Команды — в PowerShell, в папке проекта.
+
+**1. Обновить код и базу**
+
+```powershell
+git pull
+pnpm install
+pnpm infra:up
+pnpm db:migrate
+```
+
+`db:migrate` должен вывести `applied: 0003_wallet_reconciliation` (или `up to date`).
+
+**2. Поправить `.env`** — `notepad .env`.
+
+Удалите строку `MODEL_PRICING_FILE=config/model-pricing.json`, если она есть (иначе бесплатная модель будет
+считаться по ценам Anthropic как неизвестная — по максимальной ставке). Затем впишите/замените:
+
+```
+LLM_PROVIDER=tokenharbor
+TOKENHARBOR_API_KEY=ваш_ключ
+TOKENHARBOR_BASE_URL=https://tokenharbor.ai
+TOKENHARBOR_AUTH=x-api-key
+LLM_MODEL_CEO=claude-haiku-5.5:free
+LLM_MODEL_CRITIC=claude-haiku-5.5:free
+LLM_MODEL_WORKER=claude-haiku-5.5:free
+LLM_MODEL_CLASSIFIER=claude-haiku-5.5:free
+LLM_STRUCTURED_OUTPUTS=false
+LLM_RATE_LIMIT_PER_MINUTE=60
+LLM_RATE_LIMIT_PER_HOUR=1800
+LLM_COST_SAFETY_FACTOR=1.2
+```
+
+Ключ никому не отправляйте. Модель для любой роли меняется только здесь, код трогать не нужно.
+
+**3. Проверочный вызов шлюза**
+
+```powershell
+pnpm smoke:llm
+```
+
+Ожидаемо: `Provider: tokenharbor (https://tokenharbor.ai, auth x-api-key)`, `Model: claude-haiku-5.5:free`, два ответа
+(`Request 1`, `Request 2`) с фразой-приветствием, блок `Usage as reported by the provider` с токенами и сырым `usage`
+от шлюза, строка про кэш и `ACTUAL COST ... $0.000000`.
+
+- Строка `Prompt cache: NOT confirmed` — значит, шлюз не вернул `cache_read_input_tokens`; кэш считаем
+  неподтверждённым (это не ошибка).
+- `MODEL NOT LISTED` в строке `Price list` — модель не в `config/model-pricing.tokenharbor.json`, см. шаг 2.
+- `401`/`403` — проверьте ключ и `TOKENHARBOR_AUTH` (можно попробовать `bearer`).
+- `404` — проверьте, что `TOKENHARBOR_BASE_URL` без `/v1`.
+
+**4. Бот на шлюзе**
+
+```powershell
+pnpm dev:bot
+```
+
+В приветствии должно быть: `LLM: Token Harbor (шлюз)`, `Адрес шлюза: tokenharbor.ai`, модели по всем ролям
+`claude-haiku-5.5:free`, `Structured outputs: нет`, `Лимит запросов: 60/мин, 1800/час`,
+`Бесплатные модели: claude-haiku-5.5:free`. Строки `⚠️ Нет цены` быть не должно.
+
+Дальше — тот же сценарий, что в разделе этапа 2: бриф → план → утвердить → тексты → правка → новая версия →
+утвердить. `/tasks` покажет $0 по задачам.
+
+**5. Сверка с кошельком (на будущее, для платных моделей)**
+
+Посмотрите баланс в личном кабинете Token Harbor и отправьте боту `/reconcile 12.34` — первая сверка сохранит
+базу; следующие покажут, сходится ли наш учёт с фактическим списанием, и подскажут новый `LLM_COST_SAFETY_FACTOR`,
+если шлюз списал больше.
+
+**Вернуться на mock или прямой Anthropic** — поменять `LLM_PROVIDER` в `.env` и перезапустить бота.
+
 ## Демо ядра (этап 1)
 
 ```powershell
