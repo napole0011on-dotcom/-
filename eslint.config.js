@@ -25,7 +25,7 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    files: ['scripts/**', '**/cli.ts', '**/demo.ts', '**/smoke.ts'],
+    files: ['scripts/**', '**/cli.ts', '**/*-cli.ts', '**/demo.ts', '**/smoke.ts'],
     rules: { 'no-console': 'off' },
   },
 );

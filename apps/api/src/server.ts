@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyBaseLogger } from 'fastify';
 import type { Logger } from '@cms/core';
 
 export type HealthCheck = () => Promise<void>;
@@ -21,7 +21,7 @@ function withTimeout(p: Promise<void>, ms: number): Promise<void> {
 }
 
 export function buildServer(deps: ServerDeps) {
-  const app = Fastify({ loggerInstance: deps.logger });
+  const app = Fastify({ loggerInstance: deps.logger as unknown as FastifyBaseLogger });
   const timeout = deps.checkTimeoutMs ?? 3_000;
 
   // 200 when every dependency answers, 503 otherwise. Error details go to logs, not to the response.
