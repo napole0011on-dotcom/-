@@ -4,7 +4,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/coverage/**', 'packages/db/migrations/**'] },
+  { ignores: ['**/dist/**', '**/coverage/**', 'packages/db/migrations/**', 'my-video/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {

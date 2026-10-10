@@ -2,3 +2,4 @@ dist
 coverage
 pnpm-lock.yaml
 packages/db/migrations/meta
+my-video
