@@ -14,6 +14,7 @@ import {
   MockLlmTransport,
   Workflow,
   loadBrandProfileFile,
+  ensureWorkspace,
   syncPromptFiles,
   upsertBrand,
 } from '@cms/agents';
@@ -62,6 +63,7 @@ async function main() {
   let brandId = brand.id;
   // prompts/*.md -> DB: the first start seeds and activates; later file edits become new
   // versions that the owner activates in the panel.
+  await ensureWorkspace(db, brand.id);
   const promptSync = await syncPromptFiles(db, brand.id);
   if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
 

@@ -16,8 +16,15 @@ import {
   briefText,
   estimatePlan,
   getControlState,
+  linkActive,
+  loadWorkspace,
+  deleteLinkProblem,
   promptHistory,
+  recentEvents,
   toItemView,
+  toNodeView,
+  type NodeContent,
+  type Pipeline,
   type AgentControls,
   type CopyContent,
 } from '@cms/agents';
@@ -197,6 +204,7 @@ export async function agentCards(d: QueryDeps) {
       lastRunAt: last?.startedAt ?? null,
       lastRunId: last?.runId ?? null,
       success: { ok, failed, rate: ok + failed > 0 ? ok / (ok + failed) : null },
+      runs30: ok + failed,
       spentTodayUsd: num(spend?.usd),
       model: {
         name: model.name,
@@ -350,6 +358,22 @@ export async function taskDetail(d: QueryDeps, taskId: string) {
         model: a.model,
         plan: CeoPlan.parse(a.content),
       })),
+    nodes: arts
+      .filter((a) => a.slot.startsWith('node:'))
+      .map((a) => {
+        const dec = decisionByArtifact.get(a.id);
+        return {
+          ...toNodeView(a),
+          slot: a.slot,
+          createdAt: a.createdAt,
+          runId: a.runId,
+          promptVersion: a.promptVersion,
+          model: a.model,
+          decision: dec
+            ? { decision: dec.decision, comment: dec.comment, by: dec.decidedBy, at: dec.createdAt }
+            : null,
+        };
+      }),
     copies: arts
       .filter((a) => a.slot.startsWith('copy:'))
       .map((a) => {
@@ -430,12 +454,12 @@ export async function approvalQueue(d: QueryDeps) {
     .from(tasks)
     .where(sql`${tasks.status} in ('awaiting_final_approval', 'revision', 'in_review')`)
     .orderBy(tasks.statusChangedAt)) {
-    const latest = await latestArtifacts(db, t.id, 'copy:');
-    if (latest.length === 0) continue;
+    const copies = await latestArtifacts(db, t.id, 'copy:');
+    if (copies.length === 0) continue;
+    const nodes = await latestArtifacts(db, t.id, 'node:');
+    const latest = [...copies, ...nodes];
     const decided = await finalDecisions(db, t.id);
-    const pending = latest.filter(
-      (a) => decided.get(a.id)?.decision !== 'approved' && !decided.has(a.id),
-    );
+    const undecided = (a: { id: string }) => !decided.has(a.id);
     packages.push({
       taskId: t.id,
       title: t.title,
@@ -444,13 +468,18 @@ export async function approvalQueue(d: QueryDeps) {
       totalCount: latest.length,
       pendingCount: latest.filter((a) => decided.get(a.id)?.decision !== 'approved').length,
       canReject: t.status === 'awaiting_final_approval',
-      items: pending.map((a) => ({ ...toItemView(a), promptVersion: a.promptVersion })),
+      items: copies
+        .filter(undecided)
+        .map((a) => ({ ...toItemView(a), promptVersion: a.promptVersion })),
+      nodeItems: nodes
+        .filter(undecided)
+        .map((a) => ({ ...toNodeView(a), promptVersion: a.promptVersion })),
     });
   }
   return {
     plans,
     packages,
-    count: plans.length + packages.reduce((n, p) => n + p.items.length, 0),
+    count: plans.length + packages.reduce((n, p) => n + p.items.length + p.nodeItems.length, 0),
   };
 }
 
@@ -621,5 +650,120 @@ export async function agentSettingsView(d: QueryDeps, agentId: string) {
       pendingFile: prompts.pendingFile,
       versions: prompts.versions,
     },
+  };
+}
+
+/** The board: nodes (with live card data for working agents), links and positions. */
+export async function workspaceView(d: QueryDeps) {
+  const brandId = d.brandId();
+  const ws = await loadWorkspace(d.db, brandId);
+  const cards = await agentCards(d);
+  return {
+    nodes: ws.nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      role: n.role,
+      description: n.description,
+      kind: n.kind,
+      status: n.status,
+      color: n.color,
+      icon: n.icon,
+      position: ws.layout[n.id] ?? { x: 0, y: 0 },
+      card: cards.find((c) => c.id === n.id) ?? null,
+    })),
+    links: ws.links.map((l) => ({
+      id: l.id,
+      from: l.from,
+      to: l.to,
+      kind: l.kind,
+      active: linkActive(ws.nodes, l),
+      deletable: deleteLinkProblem(l) === null,
+    })),
+  };
+}
+
+export async function eventsView(d: QueryDeps, afterId = 0) {
+  return recentEvents(d.db, d.brandId(), 50, afterId);
+}
+
+export type StepState = 'pending' | 'running' | 'waiting' | 'done' | 'failed';
+
+/** "Задача" view of the board: which steps this task runs, their state, verdict and cost. */
+export async function taskPath(d: QueryDeps, taskId: string) {
+  const { db } = d;
+  const [t] = await db
+    .select()
+    .from(tasks)
+    .where(sql`${tasks.id} = ${taskId}`);
+  if (!t) return null;
+  const [planArt] = await db
+    .select()
+    .from(artifacts)
+    .where(sql`${artifacts.taskId} = ${taskId} and ${artifacts.slot} = 'plan'`)
+    .orderBy(sql`${artifacts.version} desc`)
+    .limit(1);
+  const pipeline = (planArt?.content as { pipeline?: Pipeline } | undefined)?.pipeline ?? null;
+  const runRows = await db
+    .select()
+    .from(runs)
+    .where(sql`${runs.taskId} = ${taskId}`);
+  const inv = await db
+    .select({
+      agent: agentInvocations.agent,
+      status: agentInvocations.status,
+      cost: sql<string>`coalesce(sum(${agentInvocations.costUsd}), 0)`,
+    })
+    .from(agentInvocations)
+    .where(sql`${agentInvocations.taskId} = ${taskId}`)
+    .groupBy(agentInvocations.agent, agentInvocations.status);
+  const costOf = (agent: string) =>
+    inv.filter((i) => i.agent === agent).reduce((s2, i) => s2 + num(i.cost), 0);
+  const arts = await db
+    .select()
+    .from(artifacts)
+    .where(sql`${artifacts.taskId} = ${taskId}`)
+    .orderBy(sql`${artifacts.version} desc`);
+  const verdictOf = (agent: string): boolean | null => {
+    const mine = arts.filter((a) =>
+      agent === 'copywriter' ? a.slot.startsWith('copy:') : a.slot === `node:${agent}:main`,
+    );
+    if (mine.length === 0) return null;
+    const seen = new Set<string>();
+    const latest = mine.filter((a) => !seen.has(a.slot) && seen.add(a.slot));
+    const verdicts = latest.map((a) =>
+      agent === 'copywriter'
+        ? (a.content as CopyContent).critic.passed
+        : ((a.content as NodeContent).critic?.passed ?? null),
+    );
+    return verdicts.some((v) => v === null) ? null : verdicts.every(Boolean);
+  };
+  const stateOf = (agent: string): StepState => {
+    const mine = runRows.filter((r) => {
+      const i = r.input as { kind?: string; agent?: string };
+      if (agent === 'ceo') return i.kind === 'plan';
+      if (agent === 'copywriter') return i.kind === 'copy' || i.kind === 'rework';
+      return i.kind === 'node' && i.agent === agent;
+    });
+    if (mine.some((r) => r.status === 'running')) return 'running';
+    if (mine.some((r) => r.status === 'queued'))
+      return mine.some((r) => r.waitingFor) ? 'waiting' : 'running';
+    if (mine.some((r) => r.status === 'failed' || r.status === 'dead')) return 'failed';
+    return mine.some((r) => r.status === 'succeeded') ? 'done' : 'pending';
+  };
+  const agents = ['ceo', ...(pipeline?.steps.map((s2) => s2.agent) ?? ['copywriter'])];
+  const reviewed = pipeline?.steps.some((s2) => s2.reviewed) ?? true;
+  if (reviewed) agents.push('critic');
+  return {
+    taskId,
+    title: t.title,
+    status: t.status,
+    pipeline,
+    nodes: agents.map((agent) => ({
+      agent,
+      state: agent === 'critic' ? stateOf('copywriter') : stateOf(agent),
+      verdict:
+        agent === 'critic' ? verdictOf('copywriter') : agent === 'ceo' ? null : verdictOf(agent),
+      costUsd: costOf(agent),
+    })),
   };
 }

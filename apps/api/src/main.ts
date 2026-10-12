@@ -16,10 +16,12 @@ import {
   MockLlmTransport,
   Workflow,
   loadBrandProfileFile,
+  ensureWorkspace,
   syncPromptFiles,
   upsertBrand,
   type OwnerChannel,
 } from '@cms/agents';
+import { EventHub } from './panel/event-hub.js';
 import { createMirror } from './panel/mirror.js';
 import { registerPanel } from './panel/routes.js';
 import { registerStatic } from './panel/static.js';
@@ -70,6 +72,7 @@ async function main() {
 
   const pricing = loadPricing(config.llm.pricingFile);
   const { brand } = await upsertBrand(db, loadBrandProfileFile(config.brandProfileFile));
+  await ensureWorkspace(db, brand.id);
   const promptSync = await syncPromptFiles(db, brand.id);
   if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
   const budget = { config: config.budget, timeZone: config.timezone };
@@ -103,6 +106,8 @@ async function main() {
     checks: { db: () => pingDb(pool), storage: () => storage.healthCheck() },
   });
   const port = config.api.port;
+  const events = new EventHub(pool, db, () => brand.id, logger);
+  await events.start();
   await registerPanel(app, {
     db,
     config,
@@ -113,6 +118,7 @@ async function main() {
     panel: { ...config.panel, passwordHash: panel.passwordHash },
     mirror: createMirror(config.telegram.botToken, config.telegram.ownerId),
     logger,
+    events,
     allowedOrigins: [
       `http://127.0.0.1:${port}`,
       `http://localhost:${port}`,
@@ -124,6 +130,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
+    await events.stop();
     await app.close();
     await queue.stop();
     await pool.end();

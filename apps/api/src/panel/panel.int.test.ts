@@ -6,6 +6,9 @@ import { budgetCtx, llmConfig, setupTestDb, silentLogger, type TestDb } from '@c
 import { BrandProfile, MockLlmTransport, Workflow, upsertBrand } from '@cms/agents';
 import { RecordingChannel } from '@cms/agents/testing';
 import { buildServer } from '../server.js';
+import { request } from 'node:http';
+import { emitEvent } from '@cms/agents';
+import { EventHub } from './event-hub.js';
 import { registerPanel } from './routes.js';
 
 const PASSWORD = 'panel-test-password';
@@ -17,6 +20,7 @@ describe('web panel API (Postgres)', () => {
   let app: ReturnType<typeof buildServer>;
   let wf: Workflow;
   let brandId: string;
+  let hub: EventHub;
   const queue: string[] = [];
   const mirrored: { text: string; reopen?: string }[] = [];
 
@@ -66,6 +70,8 @@ describe('web panel API (Postgres)', () => {
       logger: silentLogger,
     });
     app = buildServer({ logger: silentLogger, checks: {} });
+    hub = new EventHub(t.pool, t.db, () => brandId, silentLogger);
+    await hub.start();
     await registerPanel(app, {
       db: t.db,
       config,
@@ -88,9 +94,11 @@ describe('web panel API (Postgres)', () => {
       },
       logger: silentLogger,
       allowedOrigins: [ORIGIN],
+      events: hub,
     });
   });
   afterAll(async () => {
+    await hub?.stop();
     await app?.close();
     await t?.close();
   });
@@ -514,6 +522,118 @@ describe('web panel API (Postgres)', () => {
       expect(audit.every((a) => a.actor === 'panel:owner')).toBe(true);
     });
 
+    it('workspace: board, links (validated, audited, mirrored), layout, events, task path, SSE', async () => {
+      const s = await loginOk();
+      type Ws = {
+        nodes: {
+          id: string;
+          kind: string;
+          status: string;
+          card: { id: string } | null;
+          position: { x: number };
+        }[];
+        links: {
+          id: string;
+          from: string;
+          to: string;
+          kind: string;
+          active: boolean;
+          deletable: boolean;
+        }[];
+      };
+      const ws = (await get(s, '/api/workspace')).json<Ws>();
+      expect(ws.nodes.map((n) => n.id)).toEqual([
+        'brief',
+        'ceo',
+        'copywriter',
+        'critic',
+        'seo',
+        'image',
+        'me',
+      ]);
+      expect(ws.nodes.find((n) => n.id === 'ceo')!.card).not.toBeNull();
+      expect(ws.nodes.find((n) => n.id === 'seo')!.status).toBe('planned');
+      const sys = ws.links.find((l) => l.from === 'ceo')!;
+      expect(sys).toMatchObject({ kind: 'system', deletable: false, active: true });
+
+      mirrored.length = 0;
+      const added = await post(s, '/api/workspace/links', { from: 'critic', to: 'seo' });
+      expect(added.statusCode).toBe(200);
+      expect(added.json<{ message: string }>().message).toMatch(/заработает/);
+      expect(
+        (await post(s, '/api/workspace/links', { from: 'critic', to: 'seo' })).statusCode,
+      ).toBe(409);
+      expect((await post(s, '/api/workspace/links', { from: 'me', to: 'seo' })).statusCode).toBe(
+        409,
+      );
+      expect((await post(s, `/api/workspace/links/${sys.id}/delete`)).statusCode).toBe(409);
+      const ws2 = (await get(s, '/api/workspace')).json<Ws>();
+      const userLink = ws2.links.find((l) => l.from === 'critic' && l.to === 'seo')!;
+      expect(userLink).toMatchObject({ kind: 'user', active: false, deletable: true });
+      expect((await post(s, `/api/workspace/links/${userLink.id}/delete`)).statusCode).toBe(200);
+
+      expect(
+        (await post(s, '/api/workspace/layout', { positions: { seo: { x: 777, y: 12 } } }))
+          .statusCode,
+      ).toBe(200);
+      expect(
+        (await get(s, '/api/workspace')).json<Ws>().nodes.find((n) => n.id === 'seo')!.position.x,
+      ).toBe(777);
+      expect((await post(s, '/api/workspace/auto-layout')).statusCode).toBe(200);
+      const texts = mirrored.map((m) => m.text).join('\n');
+      expect(texts).toMatch(/Связь Critic → SEO-менеджер добавлена/);
+      expect(texts).toMatch(/удалена/);
+      expect(texts).toMatch(/расставлены/);
+      expect(texts).not.toMatch(/Положение сохранено/);
+      const noCsrf = await app.inject({
+        method: 'POST',
+        url: '/api/workspace/links',
+        headers: { cookie: s.cookie, origin: ORIGIN },
+        payload: { from: 'critic', to: 'seo' },
+      });
+      expect(noCsrf.statusCode).toBe(403);
+
+      // Events feed and the task path view after a task.
+      const { taskId } = (await post(s, '/api/tasks', { brief: 'Пост про кофе на вынос' })).json<{
+        taskId: string;
+      }>();
+      await drain();
+      const events = (await get(s, '/api/events')).json<{ kind: string; text: string }[]>();
+      expect(events.some((e) => e.kind === 'plan_ready')).toBe(true);
+      const path = (await get(s, `/api/tasks/${taskId}/path`)).json<{
+        nodes: { agent: string; state: string }[];
+      }>();
+      expect(path.nodes.find((n) => n.agent === 'ceo')!.state).toBe('done');
+      expect(path.nodes.find((n) => n.agent === 'copywriter')!.state).toBe('pending');
+
+      // SSE: a new event reaches an open stream.
+      const address = await app.listen({ host: '127.0.0.1', port: 0 });
+      const received = await new Promise<string>((resolve, reject) => {
+        const req = request(
+          `${address}/api/events/stream`,
+          { headers: { cookie: s.cookie } },
+          (res) => {
+            expect(res.headers['content-type']).toMatch(/text\/event-stream/);
+            let buf = '';
+            res.on('data', (chunk: Buffer) => {
+              buf += chunk.toString();
+              if (buf.includes('event: agent')) {
+                req.destroy();
+                resolve(buf);
+              }
+            });
+            void emitEvent(t.db, { brandId, agent: 'ceo', kind: 'info', text: 'SSE проверка' });
+          },
+        );
+        req.on('error', reject);
+        req.end();
+        setTimeout(() => reject(new Error('no SSE event within 5s')), 5000);
+      });
+      expect(received).toMatch(/SSE проверка/);
+      const anon = await app.inject({ method: 'GET', url: '/api/events/stream' });
+      expect(anon.statusCode).toBe(401);
+    });
+
     it('no secret ever appears in any panel response', async () => {
       const s = await loginOk();
       const tasks = (await get(s, '/api/tasks')).json<{ id: string }[]>();
@@ -525,6 +645,8 @@ describe('web panel API (Postgres)', () => {
         '/api/approvals',
         '/api/spend',
         '/api/agents/ceo/settings',
+        '/api/workspace',
+        '/api/events',
         `/api/tasks/${tasks[0]!.id}`,
       ];
       const runId = (await get(s, `/api/tasks/${tasks[0]!.id}`)).json<{ runs: { id: string }[] }>()

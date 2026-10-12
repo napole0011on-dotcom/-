@@ -4,10 +4,23 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { errorToJson, type Actor, type Logger, type PanelConfig } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import { AGENTS, runAgentTest, type DecisionResult, type Workflow } from '@cms/agents';
+import {
+  AGENTS,
+  addLink,
+  autoArrange,
+  deleteLink,
+  runAgentTest,
+  saveLayout,
+  type DecisionResult,
+  type Workflow,
+} from '@cms/agents';
+import type { EventHub } from './event-hub.js';
 import {
   agentSettingsView,
   approvalQueue,
+  eventsView,
+  taskPath,
+  workspaceView,
   agentCards,
   llmCallText,
   llmStatus,
@@ -31,6 +44,8 @@ export interface PanelDeps extends Omit<QueryDeps, 'controls'> {
   logger: Logger;
   /** Origins allowed to send state-changing requests (the panel itself and the Vite dev server). */
   allowedOrigins: string[];
+  /** Live agent events for the board (SSE); without it the panel falls back to polling. */
+  events?: EventHub;
 }
 
 declare module 'fastify' {
@@ -407,6 +422,77 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     const agent = agentParam.safeParse(req.params.agent);
     if (!agent.success) return reply.code(404).send({ error: 'Нет такого агента' });
     return agentSettingsView(d, agent.data);
+  });
+
+  // ------------------------------------------------------------------ workspace (board)
+  app.get('/api/workspace', async () => workspaceView(d));
+  app.get<{ Querystring: { after?: string } }>('/api/events', async (req) =>
+    eventsView(d, Number(req.query.after ?? 0) || 0),
+  );
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/path', async (req, reply) => {
+    if (!uuid.safeParse(req.params.id).success)
+      return reply.code(400).send({ error: 'Неверный id' });
+    return (
+      (await taskPath(d, req.params.id)) ?? reply.code(404).send({ error: 'Задача не найдена' })
+    );
+  });
+  const nodeId = z.string().regex(/^[a-z0-9_-]{1,40}$/);
+  app.post('/api/workspace/links', async (req, reply) => {
+    const body = z.object({ from: nodeId, to: nodeId }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверная связь' });
+    return control(reply, () => addLink(d.db, brand(), body.data.from, body.data.to, ACTOR));
+  });
+  app.post<{ Params: { id: string } }>('/api/workspace/links/:id/delete', async (req, reply) => {
+    if (!uuid.safeParse(req.params.id).success)
+      return reply.code(400).send({ ok: false, message: 'Неверный id связи' });
+    return control(reply, () => deleteLink(d.db, brand(), req.params.id, ACTOR));
+  });
+  // Dragging a node is audited but not mirrored to Telegram (too chatty).
+  app.post('/api/workspace/layout', async (req, reply) => {
+    const pos = z.object({ x: z.number().finite(), y: z.number().finite() });
+    const body = z.object({ positions: z.record(nodeId, pos) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные координаты' });
+    const r = await saveLayout(d.db, brand(), body.data.positions, ACTOR);
+    return reply.code(r.ok ? 200 : 409).send(r);
+  });
+  app.post('/api/workspace/auto-layout', (_req, reply) =>
+    control(reply, () => autoArrange(d.db, brand(), ACTOR)),
+  );
+
+  /** Server-sent events: one stream per open panel tab; the session is re-checked every 25 s. */
+  app.get('/api/events/stream', async (req, reply) => {
+    if (!d.events) return reply.code(503).send({ error: 'Живые события недоступны' });
+    const hub = d.events;
+    const token = req.cookies[SESSION_COOKIE];
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.write('retry: 3000\n\n');
+    const unsubscribe = hub.subscribe((e) => {
+      res.write(`id: ${e.id}\nevent: agent\ndata: ${JSON.stringify(e)}\n\n`);
+    });
+    const beat = setInterval(() => {
+      void touchSession(d.db, d.panel, token, false).then(
+        (s) => {
+          if (s) res.write(': ping\n\n');
+          else {
+            res.write('event: logout\ndata: {}\n\n');
+            res.end();
+          }
+        },
+        () => res.end(),
+      );
+    }, 25_000);
+    req.raw.on('close', () => {
+      clearInterval(beat);
+      unsubscribe();
+    });
   });
 }
 
