@@ -1154,7 +1154,14 @@ label {
 }
 .ws-node {
   --agent: var(--c-indigo);
-  width: 212px;
+  /* Fixed size = NODE_W x NODE_H in graph.ts: the layout can never put cards on each other. */
+  width: 220px;
+  height: 150px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -1245,14 +1252,64 @@ label {
   background: var(--st-error);
 }
 .react-flow__handle.ws-handle {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
+  z-index: 2;
   background: var(--surface);
   border: 2px solid var(--agent, var(--text-3));
   transition: background var(--t-fast) var(--ease);
 }
 .react-flow__handle.ws-handle.source {
   cursor: crosshair;
+}
+/* Invisible hit area around the point: 40x40 at 100% zoom, never smaller than the visible dot. */
+.react-flow__handle.ws-handle::before {
+  content: '';
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+}
+/* Linking by clicks: the source pulses, possible receivers are outlined. */
+.ws-node.link-source {
+  border-color: var(--agent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--agent) 30%, transparent);
+}
+.ws-node.link-ok {
+  border: 2px dashed var(--st-done);
+  cursor: copy;
+}
+.ws-node.link-bad {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ws-linking {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  /* Never covers a card the owner wants to click; only the button takes clicks. */
+  pointer-events: none;
+  transform: translateX(-50%);
+  z-index: 6;
+  background: var(--text);
+  color: var(--bg);
+  padding: 8px 14px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  box-shadow: var(--shadow-lg);
+  max-width: calc(100% - 24px);
+}
+.ws-linking button {
+  pointer-events: auto;
+  background: none;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: var(--r-pill);
+  padding: 2px 10px;
+  font: inherit;
+  cursor: pointer;
 }
 .react-flow__handle.ws-handle:hover,
 .react-flow__handle.ws-handle.connectingto {

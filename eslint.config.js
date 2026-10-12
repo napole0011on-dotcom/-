@@ -34,4 +34,10 @@ export default tseslint.config(
     files: ['scripts/**', '**/cli.ts', '**/*-cli.ts', '**/demo.ts', '**/smoke.ts'],
     rules: { 'no-console': 'off' },
   },
+  {
+    // Browser checks: they print progress and run code inside the page (page.evaluate).
+    files: ['e2e/**'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+    rules: { 'no-console': 'off' },
+  },
 );

@@ -36,6 +36,10 @@ export interface BoardNodeData extends Record<string, unknown> {
   verdict: boolean | null;
   stepCost: number | null;
   waitingOwner: number;
+  /** Linking by clicks: this card is the source, a valid receiver, or not allowed. */
+  linking: 'source' | 'ok' | 'bad' | null;
+  /** Click on the output point starts a link from this card (alternative to dragging). */
+  onLinkStart: (id: string) => void;
 }
 export type BoardNode = Node<BoardNodeData>;
 
@@ -98,6 +102,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
     data.dim ? 'dimmed' : '',
     data.state === 'error' ? 'error' : '',
     data.state === 'paused' || data.state === 'disabled' ? 'paused' : '',
+    data.linking ? `link-${data.linking}` : '',
   ].join(' ');
   const card = n.card;
   return (
@@ -125,14 +130,23 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
         </div>
       </div>
       <StatePill state={data.state} />
-      <div className="ws-node-task clamp-1" title={data.doing}>
+      <div className="ws-node-task clamp-2" title={data.doing}>
         {data.doing}
       </div>
       <div className="ws-node-metrics">
         <span>запусков {card?.runs30 ?? 0}</span>
         <span>{data.stepCost !== null ? usd(data.stepCost) : usd(card?.spentTodayUsd ?? 0)}</span>
       </div>
-      <Handle type="source" position={Position.Right} className="ws-handle source" />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="ws-handle source"
+        title="Потяните к агенту или нажмите, затем выберите получателя"
+        onClick={(e) => {
+          e.stopPropagation();
+          data.onLinkStart(n.id);
+        }}
+      />
     </div>
   );
 });
@@ -141,7 +155,10 @@ export const HumanNode = memo(function HumanNode({ data }: NodeProps<BoardNode>)
   const n = data.node;
   const isBrief = n.id === 'brief';
   return (
-    <div className={`ws-node human ${data.dim ? 'dimmed' : ''}`} aria-label={n.name}>
+    <div
+      className={`ws-node human ${data.dim ? 'dimmed' : ''} ${data.linking ? `link-${data.linking}` : ''}`}
+      aria-label={n.name}
+    >
       {!isBrief && <Handle type="target" position={Position.Left} className="ws-handle" />}
       <div className="ws-node-head">
         <div className="avatar human" aria-hidden>
@@ -157,7 +174,17 @@ export const HumanNode = memo(function HumanNode({ data }: NodeProps<BoardNode>)
           ждёт вас: {data.waitingOwner}
         </span>
       )}
-      {isBrief && <Handle type="source" position={Position.Right} className="ws-handle source" />}
+      {isBrief && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          className="ws-handle source"
+          onClick={(e) => {
+            e.stopPropagation();
+            data.onLinkStart(n.id);
+          }}
+        />
+      )}
     </div>
   );
 });

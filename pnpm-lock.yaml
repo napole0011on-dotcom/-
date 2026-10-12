@@ -23,6 +23,9 @@ importers:
       globals:
         specifier: ^17.13.0
         version: 17.13.0
+      playwright-core:
+        specifier: 1.64.0
+        version: 1.64.0
       prettier:
         specifier: ^3.9.9
         version: 3.9.9
@@ -2263,6 +2266,11 @@ packages:
 
   pino@10.4.0:
     resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
+    hasBin: true
+
+  playwright-core@1.64.0:
+    resolution: {integrity: sha512-T9r+MZkTECl2+oUcZ26YgZzTrYidTsIhYYkJix+6iDOymOb1FB2RLLSOxRGnZGv5DStt+aduIVbt+E8WygXYpg==}
+    engines: {node: '>=20'}
     hasBin: true
 
   png-js@1.1.0:
@@ -4570,6 +4578,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
       thread-stream: 4.2.0
+
+  playwright-core@1.64.0: {}
 
   png-js@1.1.0:
     dependencies:

@@ -17,6 +17,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  getNodesBounds,
   useNodesState,
   useReactFlow,
   type Connection,
@@ -49,6 +50,9 @@ import {
   type BoardNode,
 } from './nodes';
 import { demoScript, type DemoFrame } from './demo';
+
+/** Below this the output points get too small to catch: the board scrolls instead. */
+const MIN_READABLE_ZOOM = 0.55;
 
 type Selection = { type: 'node'; id: string } | { type: 'edge'; id: string } | null;
 
@@ -99,6 +103,39 @@ function WorkspaceInner() {
   const [confirmLink, setConfirmLink] = useState<WorkspaceLinkData | null>(null);
   const [drawer, setDrawer] = useState<{ id: string; tab: DrawerTab } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>([]);
+  // Linking by clicks: the card whose output point was clicked (then click the receiver).
+  const [linkFrom, setLinkFrom] = useState<string | null>(null);
+
+  /**
+   * «Вписать»: the whole board if it fits at a readable zoom; otherwise the readable zoom from
+   * the left edge (Бриф → CEO first) and the rest is reached by scrolling.
+   */
+  const fitBoard = useCallback(
+    (duration = 200) => {
+      const ns = rf.getNodes();
+      const el = document.querySelector<HTMLElement>('.ws-board .react-flow');
+      if (!ns.length || !el) return;
+      const b = getNodesBounds(ns);
+      const pad = 24;
+      const z = Math.min(
+        1,
+        (el.clientWidth - 2 * pad) / b.width,
+        (el.clientHeight - 2 * pad) / b.height,
+      );
+      if (z >= MIN_READABLE_ZOOM) void rf.fitView({ padding: 0.06, maxZoom: 1, duration });
+      else
+        void rf.setViewport(
+          {
+            x: pad - b.x * MIN_READABLE_ZOOM,
+            y: pad - b.y * MIN_READABLE_ZOOM,
+            zoom: MIN_READABLE_ZOOM,
+          },
+          { duration },
+        );
+    },
+    [rf],
+  );
+  const fitted = useRef(false);
 
   const addLink = useAction((v: { from: string; to: string }) =>
     api.post('/api/workspace/links', v),
@@ -106,7 +143,7 @@ function WorkspaceInner() {
   const delLink = useAction((id: string) => api.post(`/api/workspace/links/${id}/delete`));
   const autoLayout = useAction(
     () => api.post('/api/workspace/auto-layout'),
-    () => setTimeout(() => void rf.fitView({ padding: 0.2, duration: 200 }), 300),
+    () => setTimeout(() => fitBoard(), 300),
   );
   const saveLayout = useMutation({
     mutationFn: (positions: Record<string, { x: number; y: number }>) =>
@@ -152,6 +189,12 @@ function WorkspaceInner() {
     [data, demo, liveAgents, pathNodes, taskId],
   );
 
+  const why = useCallback(
+    (from: string, to: string) =>
+      data ? validateLink(graphNodes(data), data.links, from, to) : 'Доска ещё не загрузилась',
+    [data],
+  );
+
   // Build nodes from server data; keep positions of nodes being dragged.
   useEffect(() => {
     if (!data) return;
@@ -188,6 +231,14 @@ function WorkspaceInner() {
           verdict: taskId && !demo ? (p?.verdict ?? null) : null,
           stepCost: taskId && !demo ? (p?.costUsd ?? null) : null,
           waitingOwner: approvals?.count ?? 0,
+          linking: !linkFrom
+            ? null
+            : linkFrom === n.id
+              ? 'source'
+              : why(linkFrom, n.id) === null
+                ? 'ok'
+                : 'bad',
+          onLinkStart: setLinkFrom,
         },
       };
     });
@@ -197,7 +248,43 @@ function WorkspaceInner() {
         return old?.dragging ? { ...b, position: old.position, dragging: true } : b;
       }),
     );
-  }, [data, demo, liveAgents, pathNodes, pathLinks, taskId, path, sel, approvals, setNodes]);
+    // «Вписать» once when the page opens (after the first render of the cards).
+    if (!fitted.current && built.length) {
+      fitted.current = true;
+      setTimeout(() => fitBoard(0), 50);
+    }
+  }, [
+    data,
+    demo,
+    liveAgents,
+    pathNodes,
+    pathLinks,
+    taskId,
+    path,
+    sel,
+    approvals,
+    setNodes,
+    linkFrom,
+    why,
+    fitBoard,
+  ]);
+
+  // Esc cancels linking by clicks.
+  useEffect(() => {
+    if (!linkFrom) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setLinkFrom(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [linkFrom]);
+  /** Creates a link after a check in the browser (same rules as the server); refusals say why. */
+  const tryLink = useCallback(
+    (from: string, to: string) => {
+      const reason = data ? validateLink(graphNodes(data), data.links, from, to) : 'Подождите';
+      if (reason) toast(reason, false);
+      else addLink.mutate({ from, to });
+    },
+    [data, toast, addLink],
+  );
 
   const edges: BoardEdge[] = useMemo(() => {
     if (!data) return [];
@@ -245,11 +332,6 @@ function WorkspaceInner() {
       if (c.type === 'select' && c.selected) setSel({ type: 'edge', id: c.id });
   }, []);
 
-  const why = useCallback(
-    (from: string, to: string) =>
-      data ? validateLink(graphNodes(data), data.links, from, to) : 'Доска ещё не загрузилась',
-    [data],
-  );
   const isValidConnection = useCallback(
     (c: Connection | BoardEdge) => why(c.source, c.target) === null,
     [why],
@@ -325,14 +407,14 @@ function WorkspaceInner() {
     let t: ReturnType<typeof setTimeout> | null = null;
     const onResize = () => {
       if (t) clearTimeout(t);
-      t = setTimeout(() => void rf.fitView({ padding: 0.2, duration: 150 }), 200);
+      t = setTimeout(() => fitBoard(150), 200);
     };
     window.addEventListener('resize', onResize);
     return () => {
       if (t) clearTimeout(t);
       window.removeEventListener('resize', onResize);
     };
-  }, [rf]);
+  }, [fitBoard]);
 
   const onBeforeDelete = useCallback(
     async ({ edges: del }: { nodes: BoardNode[]; edges: BoardEdge[] }) => {
@@ -396,10 +478,7 @@ function WorkspaceInner() {
         <div>
           <div className="ws-board">
             <div className="ws-toolbar">
-              <Button
-                className="btn-sm"
-                onClick={() => void rf.fitView({ padding: 0.2, duration: 200 })}
-              >
+              <Button className="btn-sm" onClick={() => void fitBoard()}>
                 <Icon name="fit" /> Вписать
               </Button>
               <Button
@@ -425,8 +504,18 @@ function WorkspaceInner() {
               isValidConnection={isValidConnection}
               onBeforeDelete={onBeforeDelete}
               onEdgeClick={(_, e) => setSel({ type: 'edge', id: e.id })}
-              onNodeClick={(_, n) => setSel({ type: 'node', id: n.id })}
-              onPaneClick={() => setSel(null)}
+              onNodeClick={(_, n) => {
+                if (linkFrom) {
+                  if (n.id !== linkFrom) tryLink(linkFrom, n.id);
+                  setLinkFrom(null);
+                  return;
+                }
+                setSel({ type: 'node', id: n.id });
+              }}
+              onPaneClick={() => {
+                setLinkFrom(null);
+                setSel(null);
+              }}
               onNodeDragStop={(_, _n, dragged) =>
                 saveLayout.mutate(
                   Object.fromEntries(
@@ -438,9 +527,7 @@ function WorkspaceInner() {
                 )
               }
               deleteKeyCode={['Delete', 'Backspace']}
-              fitView
-              fitViewOptions={{ padding: 0.2 }}
-              minZoom={0.2}
+              minZoom={0.3}
               maxZoom={1.8}
               proOptions={{ hideAttribution: true }}
               ariaLabelConfig={{
@@ -462,8 +549,20 @@ function WorkspaceInner() {
                 />
               )}
             </ReactFlow>
+            {linkFrom && (
+              <div className="ws-linking" role="status">
+                <span>
+                  Связь от «{data.nodes.find((n) => n.id === linkFrom)?.name}»: нажмите на агента,
+                  которому передавать результат
+                </span>
+                <button type="button" onClick={() => setLinkFrom(null)}>
+                  Отмена (Esc)
+                </button>
+              </div>
+            )}
             <div className="ws-hint">
-              Потяните точку справа у агента к другому — связь. Клик по линии — удалить.
+              Связь: потяните точку справа у агента к другому или нажмите на точку, затем на
+              получателя. Клик по линии — удалить.
             </div>
           </div>
           <section className="card feed" aria-live="polite">
@@ -508,6 +607,7 @@ function WorkspaceInner() {
           sel={sel}
           onDrawer={(id, tab) => setDrawer({ id, tab })}
           onDeleteLink={setConfirmLink}
+          onAddLink={tryLink}
           onToggleSeo={(from, on) => {
             const existing = data.links.find((l) => l.from === from && l.to === 'seo');
             if (on && !existing) addLink.mutate({ from, to: 'seo' });
@@ -555,6 +655,7 @@ function SidePanel({
   sel,
   onDrawer,
   onDeleteLink,
+  onAddLink,
   onToggleSeo,
   approvals,
 }: {
@@ -562,6 +663,7 @@ function SidePanel({
   sel: Selection;
   onDrawer: (id: string, tab: DrawerTab) => void;
   onDeleteLink: (l: WorkspaceLinkData) => void;
+  onAddLink: (from: string, to: string) => void;
   onToggleSeo: (from: string, on: boolean) => void;
   approvals: number;
 }) {
@@ -681,6 +783,7 @@ function SidePanel({
           </>
         )}
       </dl>
+      <LinkEditor ws={ws} from={n.id} onAdd={onAddLink} onDelete={onDeleteLink} />
       {card && n.kind === 'code' && n.status === 'active' && (
         <div className="row wrap">
           <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
@@ -740,5 +843,84 @@ function SidePanel({
         </label>
       )}
     </aside>
+  );
+}
+
+/** «Передавать результат →»: the receivers this agent may get, without dragging thin points. */
+function LinkEditor({
+  ws,
+  from,
+  onAdd,
+  onDelete,
+}: {
+  ws: WorkspaceData;
+  from: string;
+  onAdd: (from: string, to: string) => void;
+  onDelete: (l: WorkspaceLinkData) => void;
+}) {
+  const nodes = graphNodes(ws);
+  const options = ws.nodes.filter(
+    (x) => x.id !== from && validateLink(nodes, ws.links, from, x.id) === null,
+  );
+  const [to, setTo] = useState('');
+  const out = ws.links.filter((l) => l.from === from);
+  const nameOf = (id: string) => ws.nodes.find((x) => x.id === id)?.name ?? id;
+  const value = options.some((o) => o.id === to) ? to : '';
+  return (
+    <div className="stack link-editor">
+      <b className="small">Передаёт результат</b>
+      {out.length === 0 && <div className="muted small">пока никому</div>}
+      {out.map((l) => (
+        <div key={l.id} className="row between small">
+          <span>
+            → {nameOf(l.to)}
+            {!l.active && <span className="warn"> · не работает, пока агент не активен</span>}
+          </span>
+          {l.deletable ? (
+            <button
+              type="button"
+              className="linklike danger"
+              aria-label={`Удалить связь с ${nameOf(l.to)}`}
+              onClick={() => onDelete(l)}
+            >
+              <Icon name="trash" />
+            </button>
+          ) : (
+            <span className="faint" title="Связь основного конвейера">
+              основная
+            </span>
+          )}
+        </div>
+      ))}
+      <label className="small" htmlFor={`link-to-${from}`}>
+        Передавать результат →
+      </label>
+      <div className="row">
+        <select
+          id={`link-to-${from}`}
+          value={value}
+          onChange={(e) => setTo(e.target.value)}
+          disabled={options.length === 0}
+        >
+          <option value="">{options.length ? 'выберите агента' : 'некому: все связи есть'}</option>
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+              {o.status !== 'active' && o.kind !== 'human' ? ' (не активен)' : ''}
+            </option>
+          ))}
+        </select>
+        <Button
+          className="btn-sm"
+          disabled={!value}
+          onClick={() => {
+            onAdd(from, value);
+            setTo('');
+          }}
+        >
+          <Icon name="link" /> Связать
+        </Button>
+      </div>
+    </div>
   );
 }
