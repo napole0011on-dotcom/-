@@ -124,3 +124,6 @@ export const ROLE_LABEL: Record<string, string> = {
   critic: 'Critic',
   classifier: 'классификатор',
 };
+
+/** CSS color of an agent's color token (violet, indigo, ...). */
+export const agentVar = (color: string) => `var(--c-${color})`;

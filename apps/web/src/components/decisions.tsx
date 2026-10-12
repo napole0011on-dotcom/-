@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type ItemView, type Plan, type PlanEstimate } from '../api';
+import { api, type ItemView, type NodeItem, type Plan, type PlanEstimate } from '../api';
 import { CHECK_LABEL, PLATFORM_LABEL, usd } from '../format';
 import { Button, ConfirmButton, Pill, useAction } from '../ui';
 
@@ -272,6 +272,96 @@ export function PackageActions({
           onConfirm={(c) => reject.mutate(c)}
         />
       )}
+    </div>
+  );
+}
+
+/** A result of another agent (SEO, Image, ...): its summary lines and the Critic verdict. */
+export function NodeItemView({ item }: { item: NodeItem }) {
+  return (
+    <div className="copy node-result">
+      <div className="copy-head">
+        <b>{item.agentName}</b> — {item.title}
+        <span className="muted small"> · версия {item.version}</span>
+        {item.critic &&
+          (item.critic.passed ? (
+            <Pill tone="success">Critic: принято</Pill>
+          ) : item.criticRejected ? (
+            <Pill tone="danger">Critic: не согласен после 2 правок</Pill>
+          ) : (
+            <Pill tone="accent">Critic: замечания</Pill>
+          ))}
+      </div>
+      {item.ownerComment && (
+        <div className="owner-comment small">Ваш комментарий учтён: «{item.ownerComment}»</div>
+      )}
+      <ul className="small">
+        {item.lines.map((l, i) => (
+          <li key={i}>{l}</li>
+        ))}
+      </ul>
+      {item.critic && !item.critic.passed && item.critic.issues.length > 0 && (
+        <details>
+          <summary>Замечания Critic</summary>
+          <ul className="small">
+            {item.critic.issues.map((x, i) => (
+              <li key={i}>
+                {x.problem} → {x.fix}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** Gate 2 for a non-copy result: approve, revise with a comment, redo. */
+export function NodeDecision({ artifactId }: { artifactId: string }) {
+  const [comment, setComment] = useState('');
+  const [editing, setEditing] = useState(false);
+  const decide = useAction((v: { action: 'approve' | 'revise' | 'regenerate'; comment?: string }) =>
+    api.post(`/api/artifacts/${artifactId}/decision`, v),
+  );
+  if (editing) {
+    return (
+      <div className="decision stack">
+        <textarea
+          autoFocus
+          rows={3}
+          value={comment}
+          placeholder="Что поправить?"
+          onChange={(e) => setComment(e.target.value)}
+        />
+        <div className="row">
+          <Button
+            variant="primary"
+            disabled={!comment.trim()}
+            busy={decide.isPending}
+            onClick={() => decide.mutate({ action: 'revise', comment: comment.trim() })}
+          >
+            Отправить на правку
+          </Button>
+          <Button variant="ghost" onClick={() => setEditing(false)}>
+            Отмена
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="decision row wrap">
+      <Button
+        variant="primary"
+        busy={decide.isPending}
+        onClick={() => decide.mutate({ action: 'approve' })}
+      >
+        Утвердить
+      </Button>
+      <Button onClick={() => setEditing(true)}>Правка с комментарием</Button>
+      <Button busy={decide.isPending} onClick={() => decide.mutate({ action: 'regenerate' })}>
+        Заново
+      </Button>
     </div>
   );
 }

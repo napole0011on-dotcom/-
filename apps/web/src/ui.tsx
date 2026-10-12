@@ -12,6 +12,7 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, type ActionResult } from './api';
 import type { StatusTone } from './format';
+import { Icon, type IconName } from './icons';
 import { navigate } from './router';
 
 export function Link({ to, ...rest }: { to: string } & AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -49,8 +50,16 @@ export function Button({
   );
 }
 
-export function Pill({ tone, children }: { tone: StatusTone; children: ReactNode }) {
-  return <span className={`pill pill-${tone}`}>{children}</span>;
+export function Pill({
+  tone,
+  live,
+  children,
+}: {
+  tone: StatusTone | 'primary';
+  live?: boolean;
+  children: ReactNode;
+}) {
+  return <span className={`pill pill-${tone}${live ? ' live' : ''}`}>{children}</span>;
 }
 
 export function ErrorBox({ error }: { error: unknown }) {
@@ -62,12 +71,25 @@ export function ErrorBox({ error }: { error: unknown }) {
   );
 }
 
-export function Loading() {
-  return <div className="muted">Загрузка…</div>;
+/** Skeleton placeholder instead of a spinner: the page keeps its shape while loading. */
+export function Loading({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="stack" aria-busy="true" aria-label="Загрузка">
+      <div className="skeleton" style={{ height: 28, width: 220 }} />
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="skeleton" style={{ height: 96 }} />
+      ))}
+    </div>
+  );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+export function Empty({ children, icon = 'inbox' }: { children: ReactNode; icon?: IconName }) {
+  return (
+    <div className="empty">
+      <Icon name={icon} />
+      <div>{children}</div>
+    </div>
+  );
 }
 
 // ------------------------------------------------------------------ toasts

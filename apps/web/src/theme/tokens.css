@@ -1,0 +1,176 @@
+/*
+ * Design tokens: the ONLY place in apps/web/src where colors are written as values
+ * (scripts/check-colors.mjs enforces it). Components use var(--…) and color-mix() of tokens.
+ * Light theme by default; dark theme follows the system unless the owner picked one
+ * (data-theme on <html>).
+ */
+:root {
+  /* neutrals */
+  --bg: #ffffff;
+  --board: #fbfbfe;
+  --dot: #e3e3f1;
+  --surface: #ffffff;
+  --surface-2: #f6f6fb;
+  --surface-3: #efeff7;
+  --border: #ececf5;
+  --border-strong: #dcdcea;
+  --text: #14142b;
+  --text-2: #5d5d78;
+  /* placeholders, disabled, decorative only (below 4.5:1 on white by design) */
+  --text-3: #9a9ab3;
+  --on-accent: #ffffff;
+  --overlay: color-mix(in srgb, #14142b 32%, transparent);
+
+  /* agent / category accents */
+  --c-violet: #7c3aed;
+  --c-indigo: #4f46e5;
+  --c-blue: #2563eb;
+  --c-cyan: #0891b2;
+  --c-pink: #db2777;
+  --c-emerald: #059669;
+  --c-amber: #d97706;
+  --c-red: #dc2626;
+  --c-neutral: #5d5d78;
+
+  /* roles */
+  --primary: var(--c-indigo);
+  --primary-fg: var(--on-accent);
+  --danger: var(--c-red);
+  --st-waiting: var(--c-amber);
+  --st-done: var(--c-emerald);
+  --st-error: var(--c-red);
+  --st-idle: var(--text-2);
+  --st-info: var(--c-blue);
+
+  /* shape and rhythm (4 px grid) */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-btn: 10px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* type */
+  --font: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'Cascadia Mono', Consolas, 'SFMono-Regular', monospace;
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 19px;
+  --fs-2xl: 24px;
+  --fs-3xl: 32px;
+  --tracking-tight: -0.02em;
+
+  /* depth: very soft, slightly indigo */
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #14142b 5%, transparent);
+  --shadow:
+    0 1px 2px color-mix(in srgb, #14142b 4%, transparent),
+    0 8px 24px color-mix(in srgb, #4f46e5 7%, transparent);
+  --shadow-lg:
+    0 2px 4px color-mix(in srgb, #14142b 5%, transparent),
+    0 14px 34px color-mix(in srgb, #4f46e5 14%, transparent);
+  --focus: 0 0 0 3px color-mix(in srgb, var(--primary) 35%, transparent);
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --t-fast: 150ms;
+  --t-med: 220ms;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0d0d19;
+    --board: #10101e;
+    --dot: #242438;
+    --surface: #161626;
+    --surface-2: #1c1c2e;
+    --surface-3: #232338;
+    --border: #242438;
+    --border-strong: #303048;
+    --text: #f1f1fa;
+    --text-2: #a7a7c2;
+    --text-3: #6e6e8a;
+    --on-accent: #0d0d19;
+    --overlay: color-mix(in srgb, #000000 55%, transparent);
+    --c-violet: #a78bfa;
+    --c-indigo: #818cf8;
+    --c-blue: #60a5fa;
+    --c-cyan: #22d3ee;
+    --c-pink: #f472b6;
+    --c-emerald: #34d399;
+    --c-amber: #fbbf24;
+    --c-red: #f87171;
+    --c-neutral: #a7a7c2;
+    --shadow-sm: 0 1px 2px color-mix(in srgb, #000000 30%, transparent);
+    --shadow:
+      0 1px 2px color-mix(in srgb, #000000 30%, transparent),
+      0 8px 24px color-mix(in srgb, #000000 35%, transparent);
+    --shadow-lg:
+      0 2px 4px color-mix(in srgb, #000000 40%, transparent),
+      0 14px 34px color-mix(in srgb, #000000 50%, transparent);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0d0d19;
+  --board: #10101e;
+  --dot: #242438;
+  --surface: #161626;
+  --surface-2: #1c1c2e;
+  --surface-3: #232338;
+  --border: #242438;
+  --border-strong: #303048;
+  --text: #f1f1fa;
+  --text-2: #a7a7c2;
+  --text-3: #6e6e8a;
+  --on-accent: #0d0d19;
+  --overlay: color-mix(in srgb, #000000 55%, transparent);
+  --c-violet: #a78bfa;
+  --c-indigo: #818cf8;
+  --c-blue: #60a5fa;
+  --c-cyan: #22d3ee;
+  --c-pink: #f472b6;
+  --c-emerald: #34d399;
+  --c-amber: #fbbf24;
+  --c-red: #f87171;
+  --c-neutral: #a7a7c2;
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #000000 30%, transparent);
+  --shadow:
+    0 1px 2px color-mix(in srgb, #000000 30%, transparent),
+    0 8px 24px color-mix(in srgb, #000000 35%, transparent);
+  --shadow-lg:
+    0 2px 4px color-mix(in srgb, #000000 40%, transparent),
+    0 14px 34px color-mix(in srgb, #000000 50%, transparent);
+  color-scheme: dark;
+}
+
+/* React Flow variables mapped to our tokens */
+.react-flow {
+  --xy-background-color: var(--board);
+  --xy-background-pattern-dots-color-default: var(--dot);
+  --xy-edge-stroke-default: var(--border-strong);
+  --xy-edge-stroke-selected-default: var(--primary);
+  --xy-connectionline-stroke-default: var(--primary);
+  --xy-attribution-background-color-default: transparent;
+  --xy-minimap-background-color-default: var(--surface);
+  --xy-minimap-mask-background-color-default: color-mix(in srgb, var(--board) 70%, transparent);
+  --xy-minimap-node-background-color-default: var(--surface-3);
+  --xy-controls-button-background-color-default: var(--surface);
+  --xy-controls-button-background-color-hover-default: var(--surface-2);
+  --xy-controls-button-color-default: var(--text);
+  --xy-controls-button-border-color-default: var(--border);
+  --xy-node-border-radius-default: var(--r-lg);
+}

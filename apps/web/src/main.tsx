@@ -4,7 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiError } from './api';
 import { App } from './App';
 import { ToastProvider } from './ui';
+import '@fontsource-variable/inter';
+import './theme/tokens.css';
 import './styles.css';
+import { applyTheme } from './theme/theme';
+
+applyTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: {

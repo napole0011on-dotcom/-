@@ -7,6 +7,7 @@ import {
   type AgentTestResult,
   type PromptVersion,
 } from '../api';
+import { Icon } from '../icons';
 import { collapseDiff, diffStats, lineDiff } from '../diff';
 import { AGENT_STATUS, actorLabel, dateTime } from '../format';
 import { useAgentSettings } from '../queries';
@@ -104,7 +105,7 @@ export function PauseButton({
   );
   return paused ? (
     <Button variant="primary" busy={act.isPending} onClick={() => act.mutate(false)}>
-      ▶ Продолжить
+      <Icon name="play" /> Продолжить
     </Button>
   ) : (
     <Button
@@ -112,7 +113,7 @@ export function PauseButton({
       title={`Новые запуски ${name} будут ждать в очереди, текущий доработает`}
       onClick={() => act.mutate(true)}
     >
-      ⏸ Пауза
+      <Icon name="pause" /> Пауза
     </Button>
   );
 }

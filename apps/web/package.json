@@ -9,7 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@cms/agents": "workspace:*",
+    "@fontsource-variable/inter": "^5.3.0",
     "@tanstack/react-query": "^5.104.1",
+    "@xyflow/react": "^12.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
