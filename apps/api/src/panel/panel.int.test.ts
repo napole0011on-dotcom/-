@@ -398,7 +398,17 @@ describe('web panel API (Postgres)', () => {
         }[]
       >();
       // Code agents with stats, then the planned board agents (no runs yet).
-      expect(cards.map((c) => c.id)).toEqual(['ceo', 'copywriter', 'critic', 'seo', 'image']);
+      expect(cards.map((c) => c.id)).toEqual([
+        'ceo',
+        'copywriter',
+        'critic',
+        'seo',
+        'image',
+        'stt_voice',
+        'video_transcribe',
+        'kp_render',
+        'mailer_send',
+      ]);
       for (const c of cards.slice(0, 3)) {
         expect(c.lastRunAt).not.toBeNull();
         expect(c.success.ok).toBeGreaterThan(0);
@@ -623,6 +633,10 @@ describe('web panel API (Postgres)', () => {
         'critic',
         'seo',
         'image',
+        'stt_voice',
+        'video_transcribe',
+        'kp_render',
+        'mailer_send',
         'me',
       ]);
       expect(ws.nodes.find((n) => n.id === 'ceo')!.card).not.toBeNull();
