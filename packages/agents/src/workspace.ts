@@ -7,6 +7,9 @@ import {
   SYSTEM_LINKS,
   autoLayout,
   buildPipeline,
+  freeSpot,
+  overlaps,
+  spareTop,
   deleteLinkProblem,
   validateLink,
   type GraphLink,
@@ -190,6 +193,8 @@ export async function ensureWorkspace(db: Db, brandId: string): Promise<void> {
         .from(agentDefinitions)
         .where(sql`${agentDefinitions.brandId} = ${brandId}`);
       for (const { id } of present) if (!placed.has(id)) await placeNewNode(tx, brandId, id);
+      // Boards laid out before cards had a fixed height may have cards on top of each other.
+      await resolveOverlaps(tx, brandId);
     }
     if (n === 0) {
       const pos = autoLayout(
@@ -407,18 +412,58 @@ export async function autoArrange(db: Db, brandId: string, actor: Actor): Promis
   return saveLayout(db, brandId, autoLayout(ws.nodes, ws.links), actor, 'layout_auto');
 }
 
-/** A new registry agent appears on the board in a free spot to the right/below. */
+/** A new registry agent appears on the board in a free spot (never on top of another card). */
 export async function placeNewNode(db: DbOrTx, brandId: string, nodeId: string): Promise<void> {
   const rows = await db
     .select()
     .from(agentLayout)
     .where(sql`${agentLayout.brandId} = ${brandId}`);
-  const maxY = Math.max(0, ...rows.map((r) => r.y));
-  const x = rows.find((r) => r.nodeId === 'copywriter')?.x ?? 300;
+  const links = await db
+    .select({ from: agentLinks.fromNode, to: agentLinks.toNode })
+    .from(agentLinks)
+    .where(sql`${agentLinks.brandId} = ${brandId}`);
+  const pos = Object.fromEntries(rows.map((r) => [r.nodeId, { x: r.x, y: r.y }]));
+  const p = freeSpot(
+    rows.map((r) => ({ x: r.x, y: r.y })),
+    spareTop(pos, links),
+  );
   await db
     .insert(agentLayout)
-    .values({ brandId, nodeId, x, y: maxY + 180 })
+    .values({ brandId, nodeId, ...p })
     .onConflictDoNothing();
+}
+
+/**
+ * Cards that overlap another card (e.g. a board laid out by an older version) are moved to
+ * free spots; positions the owner chose and that do not overlap stay as they are.
+ */
+export async function resolveOverlaps(db: DbOrTx, brandId: string): Promise<number> {
+  const rows = await db
+    .select()
+    .from(agentLayout)
+    .where(sql`${agentLayout.brandId} = ${brandId}`)
+    .orderBy(agentLayout.updatedAt);
+  const links = await db
+    .select({ from: agentLinks.fromNode, to: agentLinks.toNode })
+    .from(agentLinks)
+    .where(sql`${agentLinks.brandId} = ${brandId}`);
+  const top = spareTop(Object.fromEntries(rows.map((r) => [r.nodeId, r])), links);
+  const kept: { x: number; y: number }[] = [];
+  let moved = 0;
+  for (const r of rows) {
+    if (!kept.some((k) => overlaps(k, r))) {
+      kept.push({ x: r.x, y: r.y });
+      continue;
+    }
+    const p = freeSpot(kept, top);
+    kept.push(p);
+    moved++;
+    await db
+      .update(agentLayout)
+      .set({ ...p, updatedAt: sql`now()` })
+      .where(sql`${agentLayout.brandId} = ${brandId} and ${agentLayout.nodeId} = ${r.nodeId}`);
+  }
+  return moved;
 }
 
 export const nextColor = (used: string[]) =>

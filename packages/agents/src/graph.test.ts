@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   SYSTEM_LINKS,
   autoLayout,
+  freeSpot,
+  overlaps,
   buildPipeline,
   deleteLinkProblem,
   linkActive,
@@ -117,5 +119,24 @@ describe('auto layout', () => {
     expect(pos.seo!.x).toBeGreaterThan(pos.critic!.x);
     expect(pos.me!.x).toBeGreaterThan(pos.seo!.x);
     expect(Object.keys(pos).sort()).toEqual(NODES.map((n) => n.id).sort());
+  });
+
+  it('never overlaps: 16 cards, links and unlinked tools, plus free spots for new agents', () => {
+    const many = [
+      ...NODES,
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `extra${i}`,
+        name: `Extra ${i}`,
+        kind: 'tool' as const,
+        status: 'active' as const,
+      })),
+    ];
+    expect(many.length).toBeGreaterThanOrEqual(12);
+    const pos = autoLayout(many, [...sys(), user('critic', 'seo'), user('copywriter', 'extra0')]);
+    const all = Object.values(pos);
+    for (let i = 0; i < all.length; i++)
+      for (let j = i + 1; j < all.length; j++) expect(overlaps(all[i]!, all[j]!, 0)).toBe(false);
+    const spot = freeSpot(all);
+    expect(all.some((p) => overlaps(p, spot, 0))).toBe(false);
   });
 });

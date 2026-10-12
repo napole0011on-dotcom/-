@@ -222,40 +222,98 @@ export function linkActive(nodes: GraphNode[], link: Pick<GraphLink, 'from' | 't
 }
 
 export const NODE_W = 220;
-export const NODE_H = 140;
+/** Every card has this fixed height (CSS .ws-node), so the layout never overlaps. */
+export const NODE_H = 150;
+export const GAP_X = 90;
+export const GAP_Y = 40;
+/** Unlinked agents (tools, drafts, planned) are laid out in rows of this many under the flow. */
+const SPARE_PER_ROW = 6;
 
-/** Layered layout: column = longest path from "Бриф"; unlinked nodes go to an extra column. */
+/**
+ * Layered layout, left to right, without overlaps: Бриф → CEO → workers → Critic → SEO → Вы.
+ * Column = longest path (sources without inputs start next to Бриф); "Вы" is always last.
+ * Agents without links go to separate rows below the flow.
+ */
 export function autoLayout(
   nodes: Pick<GraphNode, 'id'>[],
   links: Pick<GraphLink, 'from' | 'to'>[],
 ): Record<string, { x: number; y: number }> {
-  const level = new Map<string, number>([[BRIEF, 0]]);
-  for (let i = 0; i < nodes.length; i++) {
-    for (const l of links) {
+  const ids = new Set(nodes.map((n) => n.id));
+  const live = links.filter((l) => ids.has(l.from) && ids.has(l.to));
+  const linked = new Set(live.flatMap((l) => [l.from, l.to]));
+  linked.add(BRIEF);
+  linked.add(OWNER);
+  const level = new Map<string, number>();
+  for (const id of linked)
+    if (id === BRIEF) level.set(id, 0);
+    else if (!live.some((l) => l.to === id)) level.set(id, 1);
+  // Longest path; the graph is a DAG (validateLink refuses cycles), so |nodes| passes suffice.
+  for (let i = 0; i < nodes.length; i++)
+    for (const l of live) {
       const f = level.get(l.from);
-      if (f === undefined) continue;
-      if ((level.get(l.to) ?? -1) < f + 1) level.set(l.to, f + 1);
+      if (f !== undefined && (level.get(l.to) ?? -1) < f + 1) level.set(l.to, f + 1);
     }
-  }
   const maxLevel = Math.max(
-    0,
+    1,
     ...[...level.entries()].filter(([k]) => k !== OWNER).map(([, v]) => v),
   );
   level.set(OWNER, maxLevel + 1);
-  for (const n of nodes)
-    if (!level.has(n.id)) level.set(n.id, maxLevel === 0 ? 1 : Math.max(1, maxLevel));
   const columns = new Map<number, string[]>();
   for (const n of nodes) {
-    const l = level.get(n.id)!;
+    if (!linked.has(n.id)) continue;
+    const l = level.get(n.id) ?? 1;
     columns.set(l, [...(columns.get(l) ?? []), n.id]);
   }
   const out: Record<string, { x: number; y: number }> = {};
-  const tallest = Math.max(...[...columns.values()].map((c) => c.length));
-  for (const [l, ids] of columns) {
-    const offset = ((tallest - ids.length) * (NODE_H + 30)) / 2;
-    ids.forEach((id, i) => {
-      out[id] = { x: l * (NODE_W + 50), y: Math.round(offset + i * (NODE_H + 30)) };
+  const stepX = NODE_W + GAP_X;
+  const stepY = NODE_H + GAP_Y;
+  const tallest = Math.max(1, ...[...columns.values()].map((c) => c.length));
+  for (const [l, col] of columns) {
+    const offset = ((tallest - col.length) * stepY) / 2;
+    col.forEach((id, i) => {
+      out[id] = { x: l * stepX, y: Math.round(offset + i * stepY) };
     });
   }
+  const spare = nodes.filter((n) => !linked.has(n.id)).map((n) => n.id);
+  const top = tallest * stepY + GAP_Y;
+  spare.forEach((id, i) => {
+    out[id] = {
+      x: (1 + (i % SPARE_PER_ROW)) * stepX,
+      y: top + Math.floor(i / SPARE_PER_ROW) * stepY,
+    };
+  });
   return out;
+}
+
+/** Top of the spare rows: one row below the lowest card that takes part in a link. */
+export function spareTop(
+  positions: Record<string, { x: number; y: number }>,
+  links: Pick<GraphLink, 'from' | 'to'>[],
+): number {
+  const linked = new Set(links.flatMap((l) => [l.from, l.to]));
+  const ys = Object.entries(positions)
+    .filter(([id]) => linked.has(id))
+    .map(([, p]) => p.y);
+  return ys.length ? Math.max(...ys) + NODE_H + GAP_Y * 2 : 0;
+}
+
+/** Do two cards placed at these positions overlap (with a small margin)? */
+export const overlaps = (a: { x: number; y: number }, b: { x: number; y: number }, margin = 10) =>
+  Math.abs(a.x - b.x) < NODE_W + margin && Math.abs(a.y - b.y) < NODE_H + margin;
+
+/** A free spot for a new card: the first cell of the spare rows that nothing covers. */
+export function freeSpot(
+  taken: { x: number; y: number }[],
+  /** Spare rows start here (below the linked flow), so a new card never lands inside it. */
+  startY = 0,
+): { x: number; y: number } {
+  const stepX = NODE_W + GAP_X;
+  const stepY = NODE_H + GAP_Y;
+  const bottom = taken.length ? Math.max(...taken.map((p) => p.y)) : 0;
+  for (let row = 0; row < 50; row++)
+    for (let col = 1; col <= SPARE_PER_ROW; col++) {
+      const p = { x: col * stepX, y: startY + row * stepY };
+      if (!taken.some((t) => overlaps(t, p))) return p;
+    }
+  return { x: stepX, y: bottom + stepY };
 }
