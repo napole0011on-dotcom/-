@@ -425,3 +425,89 @@ export const globalControls = pgTable('global_controls', {
   changedBy: text('changed_by'),
   changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Agent registry shown on the workspace board: code agents (CEO, Copywriter, Critic, ...),
+ * agents built in the constructor, tool steps and the two human nodes ("Бриф", "Вы").
+ */
+export const agentDefinitions = pgTable(
+  'agent_definitions',
+  {
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    id: text('id').notNull(),
+    name: text('name').notNull(),
+    role: text('role').notNull(),
+    description: text('description').notNull().default(''),
+    /** human | code | constructor | tool */
+    kind: text('kind').notNull(),
+    /** active | draft | planned */
+    status: text('status').notNull().default('active'),
+    /** Color token name (violet, indigo, ...), assigned round-robin and kept. */
+    color: text('color').notNull(),
+    icon: text('icon').notNull(),
+    /** Which LLM_MODEL_* role the agent uses (null for humans and tools). */
+    modelRole: text('model_role'),
+    /** Constructor/tool specification (output fields, critic criteria, permissions). */
+    spec: jsonb('spec').notNull().default({}),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.brandId, t.id] })],
+);
+
+/** A -> B: the result of A goes to B's input and B runs after A. */
+export const agentLinks = pgTable(
+  'agent_links',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    fromNode: text('from_node').notNull(),
+    toNode: text('to_node').notNull(),
+    /** system (pipeline, cannot be deleted) | user */
+    kind: text('kind').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('agent_links_pair_uq').on(t.brandId, t.fromNode, t.toNode)],
+);
+
+/** Node positions on the board. */
+export const agentLayout = pgTable(
+  'agent_layout',
+  {
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    nodeId: text('node_id').notNull(),
+    x: integer('x').notNull(),
+    y: integer('y').notNull(),
+    updatedBy: text('updated_by'),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.brandId, t.nodeId] })],
+);
+
+/** "Что происходит сейчас": short live events; a trigger NOTIFYs listeners (panel SSE). */
+export const agentEvents = pgTable(
+  'agent_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+    agent: text('agent').notNull(),
+    taskId: uuid('task_id').references(() => tasks.id),
+    runId: uuid('run_id').references(() => runs.id),
+    /** started | finished | failed | plan_ready | verdict | waiting_owner | decision | exported | info */
+    kind: text('kind').notNull(),
+    text: text('text').notNull(),
+    costUsd: usd('cost_usd'),
+  },
+  (t) => [index('agent_events_brand_id_idx').on(t.brandId, t.id)],
+);
