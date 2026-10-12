@@ -652,7 +652,7 @@ function SidePanel({
             </dd>
             <dt>Промпт</dt>
             <dd>
-              <code>{card.promptVersion}</code>
+              <code>{card.promptVersion ?? 'не сохранён'}</code>
             </dd>
             <dt>Запусков (30 дн.)</dt>
             <dd>{card.runs30}</dd>
@@ -677,6 +677,16 @@ function SidePanel({
           </Button>
           <Button variant="primary" onClick={() => onDrawer(n.id, 'overview')}>
             <Icon name="settings" /> Настроить
+          </Button>
+        </div>
+      )}
+      {n.kind === 'constructor' && (
+        <div className="row wrap">
+          {card && n.status === 'active' && (
+            <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
+          )}
+          <Button variant="primary" onClick={() => navigate(`/agents/${n.id}/build`)}>
+            <Icon name="settings" /> {n.status === 'active' ? 'Конструктор' : 'Собрать агента'}
           </Button>
         </div>
       )}

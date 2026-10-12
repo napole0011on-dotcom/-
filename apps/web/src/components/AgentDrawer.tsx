@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ApiError,
   api,
@@ -169,7 +169,7 @@ function Overview({ s }: { s: AgentSettings }) {
         </dd>
         <dt>Промпт</dt>
         <dd>
-          <code>{s.prompts.active.label}</code>
+          <code>{s.prompts.active?.label ?? 'не сохранён'}</code>
           {s.prompts.pendingFile && (
             <span className="warn small"> · есть новая версия из файла</span>
           )}
@@ -181,7 +181,7 @@ function Overview({ s }: { s: AgentSettings }) {
 
 // ------------------------------------------------------------------ Модель
 
-function ModelTab({ s }: { s: AgentSettings }) {
+export function ModelTab({ s }: { s: AgentSettings }) {
   const [model, setModel] = useState(s.model.name);
   const save = useAction((m: string) => api.post(`/api/agents/${s.agent.id}/model`, { model: m }));
   const reset = useAction(() => api.post(`/api/agents/${s.agent.id}/model/reset`));
@@ -288,11 +288,11 @@ function ActivateButton({
 }: {
   agentId: string;
   v: PromptVersion;
-  active: PromptVersion;
+  active: PromptVersion | null;
   label: string;
 }) {
   const act = useAction(() => api.post(`/api/agents/${agentId}/prompts/${v.id}/activate`));
-  if (v.version < active.version) {
+  if (active && v.version < active.version) {
     return (
       <ConfirmButton
         label={label}
@@ -311,7 +311,7 @@ function ActivateButton({
   );
 }
 
-function PromptTab({
+export function PromptTab({
   s,
   draft,
   setDraft,
@@ -321,8 +321,9 @@ function PromptTab({
   setDraft: (t: string | null) => void;
 }) {
   const active = s.prompts.active;
-  const text = draft ?? active.text;
-  const dirty = draft !== null && draft !== active.text;
+  const activeText = active?.text ?? '';
+  const text = draft ?? activeText;
+  const dirty = draft !== null && draft !== activeText;
   const problem = promptProblem(text, s.prompts.maxBytes);
   const [showDiff, setShowDiff] = useState(false);
   const [compare, setCompare] = useState<PromptVersion | null>(null);
@@ -333,7 +334,7 @@ function PromptTab({
   const size = bytes(text);
   return (
     <div className="stack">
-      {s.prompts.pendingFile && (
+      {s.prompts.pendingFile && active && (
         <div className="card warn-card stack">
           <b>Есть новая версия из файла: {s.prompts.pendingFile.label}</b>
           <div className="small">
@@ -352,12 +353,16 @@ function PromptTab({
         </div>
       )}
       <div className="row between wrap">
-        <div>
-          Активна: <code>{active.label}</code>{' '}
-          <span className="muted small">
-            ({active.source === 'file' ? 'из файла' : 'из панели'}, {dateTime(active.createdAt)})
-          </span>
-        </div>
+        {active ? (
+          <div>
+            Активна: <code>{active.label}</code>{' '}
+            <span className="muted small">
+              ({active.source === 'file' ? 'из файла' : 'из панели'}, {dateTime(active.createdAt)})
+            </span>
+          </div>
+        ) : (
+          <div className="warn">Промпт ещё не сохранён — без него агент не работает</div>
+        )}
         <span className={`small ${size > s.prompts.maxBytes ? 'danger' : 'muted'}`}>
           {(size / 1024).toFixed(1)} / {s.prompts.maxBytes / 1024} КБ
         </span>
@@ -386,50 +391,52 @@ function PromptTab({
           Отменить правки
         </Button>
       </div>
-      {dirty && showDiff && <Diff before={active.text} after={text} />}
+      {dirty && showDiff && <Diff before={activeText} after={text} />}
       <div className="muted small">
         Сохранение создаёт новую версию и сразу делает её активной для новых запусков. Версия
         промпта записывается в каждый вызов модели и каждый результат.
       </div>
 
       <h3>Версии</h3>
-      <table className="table small">
-        <tbody>
-          {s.prompts.versions.map((v) => (
-            <tr key={v.id}>
-              <td>
-                <code>{v.label}</code> {v.active && <Pill tone="success">активна</Pill>}
-              </td>
-              <td>
-                {v.source === 'file'
-                  ? `файл${v.fileVersion ? ` (v${v.fileVersion})` : ''}`
-                  : 'панель'}
-              </td>
-              <td>{actorLabel(v.createdBy)}</td>
-              <td>{dateTime(v.createdAt)}</td>
-              <td className="row end">
-                {!v.active && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      onClick={() => setCompare(compare?.id === v.id ? null : v)}
-                    >
-                      Сравнить
-                    </Button>
-                    <ActivateButton
-                      agentId={s.agent.id}
-                      v={v}
-                      active={active}
-                      label="Сделать активной"
-                    />
-                  </>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {compare && (
+      <div className="table-wrap">
+        <table className="table small">
+          <tbody>
+            {s.prompts.versions.map((v) => (
+              <tr key={v.id}>
+                <td>
+                  <code>{v.label}</code> {v.active && <Pill tone="success">активна</Pill>}
+                </td>
+                <td>
+                  {v.source === 'file'
+                    ? `файл${v.fileVersion ? ` (v${v.fileVersion})` : ''}`
+                    : 'панель'}
+                </td>
+                <td>{actorLabel(v.createdBy)}</td>
+                <td>{dateTime(v.createdAt)}</td>
+                <td className="row end">
+                  {!v.active && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        onClick={() => setCompare(compare?.id === v.id ? null : v)}
+                      >
+                        Сравнить
+                      </Button>
+                      <ActivateButton
+                        agentId={s.agent.id}
+                        v={v}
+                        active={active}
+                        label="Сделать активной"
+                      />
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {compare && active && (
         <div className="stack">
           <div className="small">
             Разница: активная <code>{active.label}</code> → <code>{compare.label}</code>
@@ -443,12 +450,15 @@ function PromptTab({
 
 // ------------------------------------------------------------------ Тест
 
-function TestTab({ s, draft }: { s: AgentSettings; draft: string | null }) {
-  const hasDraft = draft !== null && draft !== s.prompts.active.text;
+export function TestTab({ s, draft }: { s: AgentSettings; draft: string | null }) {
+  const hasDraft = draft !== null && draft !== (s.prompts.active?.text ?? '');
   const [useDraft, setUseDraft] = useState(hasDraft);
+  const qc = useQueryClient();
   const run = useMutation({
     mutationFn: (promptText: string | null) =>
       api.post<AgentTestResult>(`/api/agents/${s.agent.id}/test`, { promptText }),
+    // A recorded test changes what blocks activation in the constructor.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['agent-settings', s.agent.id] }),
   });
   const result: AgentTestResult | null =
     run.data ??
@@ -487,9 +497,39 @@ function TestTab({ s, draft }: { s: AgentSettings; draft: string | null }) {
             <code>{result.model ?? '—'}</code> (в тесте — mock) ·{' '}
             {(result.latencyMs / 1000).toFixed(1)} с
           </div>
+          {result.recorded && result.ok && (
+            <div className="small">Тест сохранённой версии записан — агента можно включать.</div>
+          )}
+          {result.recorded === false && s.constructor && (
+            <div className="small muted">
+              Тест черновика не считается для включения: сохраните промпт и поля и запустите тест
+              снова.
+            </div>
+          )}
+          {result.render && (
+            <div className="card stack">
+              <b>{result.render.title}</b>
+              {result.render.lines.map((l, i) => (
+                <div key={i} className="small">
+                  {l}
+                </div>
+              ))}
+            </div>
+          )}
+          {result.review && (
+            <div className={result.review.passed ? 'success-box' : 'warn-card card'}>
+              <b>Critic: {result.review.passed ? 'принято' : 'есть замечания'}</b>
+              <div className="small">{result.review.summary}</div>
+              {result.review.issues.map((x, i) => (
+                <div key={i} className="small">
+                  • {x.problem} → {x.fix}
+                </div>
+              ))}
+            </div>
+          )}
           {result.output != null && (
-            <details open>
-              <summary>Результат агента</summary>
+            <details open={!result.render}>
+              <summary>Результат агента (JSON)</summary>
               <pre>{JSON.stringify(result.output, null, 2)}</pre>
             </details>
           )}

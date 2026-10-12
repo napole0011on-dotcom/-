@@ -7,6 +7,7 @@ import { matchRoute, usePath } from './router';
 import { Icon } from './icons';
 import { useTheme } from './theme/theme';
 import { Button, ConfirmButton, Link, Loading, useAction } from './ui';
+import { AgentBuilder } from './pages/AgentBuilder';
 import { Agents } from './pages/Agents';
 import { Approvals } from './pages/Approvals';
 import { Login } from './pages/Login';
@@ -233,6 +234,8 @@ function Page({ path }: { path: string }) {
   if (path === '/approvals') return <Approvals />;
   if (path === '/spend') return <Spend />;
   if (path === '/agents/new') return <NewAgent />;
+  const builder = matchRoute('/agents/:id/build', path);
+  if (builder) return <AgentBuilder key={builder.id} id={builder.id!} />;
   const task = matchRoute('/tasks/:id', path);
   if (task) return <TaskPage key={task.id} id={task.id!} />;
   const run = matchRoute('/runs/:id', path);

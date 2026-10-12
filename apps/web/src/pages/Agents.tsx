@@ -147,7 +147,7 @@ function AgentList() {
                 </dd>
                 <dt>Промпт</dt>
                 <dd>
-                  <code>{a.promptVersion}</code>
+                  <code>{a.promptVersion ?? '—'}</code>
                   {a.pendingFilePrompt && (
                     <div>
                       <button
@@ -161,10 +161,24 @@ function AgentList() {
                   )}
                 </dd>
               </dl>
-              <div className="row">
-                <PauseButton agentId={a.id} paused={a.controls.paused} name={a.name} />
-                <Button onClick={() => setDrawer({ id: a.id, tab: 'test' })}>Тест</Button>
-                <Button onClick={() => setDrawer({ id: a.id, tab: 'overview' })}>Настроить</Button>
+              <div className="row wrap">
+                {a.registryStatus === 'active' && (
+                  <PauseButton agentId={a.id} paused={a.controls.paused} name={a.name} />
+                )}
+                {a.kind === 'constructor' ? (
+                  <Link to={`/agents/${a.id}/build`} className="btn btn-primary">
+                    {a.registryStatus === 'active' ? 'Конструктор' : 'Собрать агента'}
+                  </Link>
+                ) : a.registryStatus === 'active' ? (
+                  <>
+                    <Button onClick={() => setDrawer({ id: a.id, tab: 'test' })}>Тест</Button>
+                    <Button onClick={() => setDrawer({ id: a.id, tab: 'overview' })}>
+                      Настроить
+                    </Button>
+                  </>
+                ) : (
+                  <span className="muted small">запланирован — появится на следующем этапе</span>
+                )}
               </div>
             </div>
           );

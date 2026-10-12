@@ -52,6 +52,9 @@ export interface AgentCard {
   name: string;
   role: string;
   description: string;
+  kind: NodeKind;
+  /** Registry status: a constructor agent is a draft until it passes a test and is switched on. */
+  registryStatus: NodeStatus;
   status: AgentStatus;
   currentTask: {
     id: string;
@@ -72,7 +75,8 @@ export interface AgentCard {
     /** Panel model not in the current price list: ignored, .env is used. */
     ignoredOverride: string | null;
   };
-  promptVersion: string;
+  /** null: a new constructor agent without a saved prompt yet. */
+  promptVersion: string | null;
   /** Label of a newer prompt version from the file that is not active yet. */
   pendingFilePrompt: string | null;
   controls: AgentControlsView;
@@ -92,8 +96,55 @@ export interface PromptVersion {
   active: boolean;
 }
 
+export type FieldType = 'text' | 'long_text' | 'list' | 'number' | 'boolean' | 'items';
+
+export interface SubFieldSpec {
+  key: string;
+  label: string;
+  type: 'text' | 'long_text' | 'number' | 'boolean';
+  hint?: string;
+}
+
+export interface FieldSpec {
+  key: string;
+  label: string;
+  type: FieldType;
+  required?: boolean;
+  hint?: string;
+  minItems?: number;
+  fields?: SubFieldSpec[];
+}
+
+export interface AgentTestRecord {
+  ok: boolean;
+  at: string;
+  message: string;
+  specHash: string;
+  promptVersion: string;
+}
+
+export interface ConstructorView {
+  fields: FieldSpec[];
+  criteria: string[];
+  lastTest: AgentTestRecord | null;
+  /** Hash of the saved fields + criteria (null while they are incomplete). */
+  specHash: string | null;
+  /** What still blocks switching the agent on (empty when active or ready). */
+  activationProblems: string[];
+}
+
 export interface AgentSettings {
-  agent: { id: string; name: string; role: string; description: string };
+  agent: {
+    id: string;
+    name: string;
+    role: string;
+    description: string;
+    kind: NodeKind;
+    status: NodeStatus;
+    color: string;
+    icon: string;
+  };
+  constructor: ConstructorView | null;
   controls: AgentControlsView;
   model: {
     name: string;
@@ -105,7 +156,7 @@ export interface AgentSettings {
   };
   prompts: {
     maxBytes: number;
-    active: PromptVersion;
+    active: PromptVersion | null;
     pendingFile: PromptVersion | null;
     versions: PromptVersion[];
   };
@@ -120,6 +171,9 @@ export interface AgentTestResult {
   latencyMs: number;
   input: unknown;
   output: unknown;
+  render?: { title: string; lines: string[] } | null;
+  review?: { passed: boolean; summary: string; issues: { problem: string; fix: string }[] } | null;
+  recorded?: boolean;
 }
 
 export interface TaskRow {
@@ -391,6 +445,8 @@ export interface ActionResult {
   ok: boolean;
   message: string;
   taskId?: string;
+  /** Agent id after creating a constructor agent. */
+  id?: string;
 }
 
 export type NodeKind = 'human' | 'code' | 'constructor' | 'tool';
