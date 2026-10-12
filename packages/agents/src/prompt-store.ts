@@ -8,8 +8,10 @@ import {
   promptHash,
   promptLabel,
   validatePromptText,
+  isCodePromptAgent,
   type AgentName,
   type LoadedPrompt,
+  type PromptMap,
 } from './prompts.js';
 
 const { promptVersions, agentSettings, auditLog } = schema;
@@ -27,7 +29,7 @@ export const labelOf = (v: Pick<PromptVersion, 'agent' | 'version' | 'hash'>) =>
 
 const toLoaded = (v: PromptVersion): ActivePrompt => ({
   id: v.id,
-  agent: v.agent as AgentName,
+  agent: v.agent,
   text: v.text,
   version: labelOf(v),
 });
@@ -121,13 +123,9 @@ export async function syncPromptFiles(
 }
 
 /** The prompt agents run with: the active DB version (seeded from the file on first use). */
-export async function activePrompt(
-  db: Db,
-  brandId: string,
-  agent: AgentName,
-): Promise<ActivePrompt> {
+export async function activePrompt(db: Db, brandId: string, agent: string): Promise<ActivePrompt> {
   let v = await activeVersion(db, brandId, agent);
-  if (!v) {
+  if (!v && isCodePromptAgent(agent)) {
     await syncPromptFiles(db, brandId);
     v = await activeVersion(db, brandId, agent);
   }
@@ -135,14 +133,27 @@ export async function activePrompt(
   return toLoaded(v);
 }
 
+/** Code agents' prompts plus the active prompts of `extra` registry agents (those that have one). */
 export async function activePrompts(
   db: Db,
   brandId: string,
-): Promise<Record<AgentName, ActivePrompt>> {
+  extra: readonly string[] = [],
+): Promise<PromptMap> {
   const entries = await Promise.all(
     AGENT_NAMES.map(async (a) => [a, await activePrompt(db, brandId, a)] as const),
   );
-  return Object.fromEntries(entries) as Record<AgentName, ActivePrompt>;
+  const out: PromptMap = Object.fromEntries(entries) as Record<AgentName, ActivePrompt>;
+  for (const a of extra) {
+    if (out[a]) continue;
+    const v = await activeVersion(db, brandId, a);
+    if (v) out[a] = toLoaded(v);
+  }
+  return out;
+}
+
+/** Whether an agent already has an active prompt version (registry agents start without one). */
+export async function hasActivePrompt(db: DbOrTx, brandId: string, agent: string) {
+  return (await activeVersion(db, brandId, agent)) !== null;
 }
 
 export interface PromptVersionView {
@@ -158,8 +169,10 @@ export interface PromptVersionView {
 }
 
 /** All versions, newest first, plus the file version that is newer than the active one (if any). */
-export async function promptHistory(db: Db, brandId: string, agent: AgentName) {
-  const active = await activePrompt(db, brandId, agent);
+export async function promptHistory(db: Db, brandId: string, agent: string) {
+  const active = isCodePromptAgent(agent)
+    ? await activePrompt(db, brandId, agent)
+    : await activeVersion(db, brandId, agent);
   const rows = await db
     .select()
     .from(promptVersions)
@@ -174,12 +187,15 @@ export async function promptHistory(db: Db, brandId: string, agent: AgentName) {
     fileVersion: r.fileVersion,
     createdBy: r.createdBy,
     createdAt: r.createdAt,
-    active: r.id === active.id,
+    active: r.id === active?.id,
   }));
-  const activeRow = versions.find((v) => v.active)!;
+  // A new registry agent has no active version until the owner saves its first prompt.
+  const activeRow = versions.find((v) => v.active) ?? null;
   const newestFile = versions.find((v) => v.source === 'file');
   const pendingFile =
-    newestFile && !newestFile.active && newestFile.version > activeRow.version ? newestFile : null;
+    newestFile && !newestFile.active && newestFile.version > (activeRow?.version ?? 0)
+      ? newestFile
+      : null;
   return { active: activeRow, versions, pendingFile };
 }
 
@@ -192,7 +208,7 @@ export interface PromptChange {
 async function setActive(
   tx: DbOrTx,
   brandId: string,
-  agent: AgentName,
+  agent: string,
   row: PromptVersion,
   actor: Actor,
   action: string,
@@ -216,7 +232,7 @@ async function setActive(
 export async function savePromptVersion(
   db: Db,
   brandId: string,
-  agent: AgentName,
+  agent: string,
   rawText: string,
   actor: Actor,
 ): Promise<PromptChange> {
@@ -252,7 +268,7 @@ export async function savePromptVersion(
 export async function activatePromptVersion(
   db: Db,
   brandId: string,
-  agent: AgentName,
+  agent: string,
   versionId: string,
   actor: Actor,
 ): Promise<PromptChange> {

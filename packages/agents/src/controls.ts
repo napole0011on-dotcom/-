@@ -1,15 +1,15 @@
 import type { Actor, AppConfig, LlmConfig, Logger, ModelPricing } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
 import { releaseWaitingRuns, type Run } from '@cms/engine';
-import { AGENTS, agentById, type AgentDefinition } from './registry.js';
+import { listAgents, resolveAgent, type AgentRef } from './agent-registry.js';
+import { AGENTS } from './registry.js';
 import {
   activatePromptVersion,
   activePrompts,
   savePromptVersion,
-  type ActivePrompt,
   type PromptChange,
 } from './prompt-store.js';
-import type { AgentName } from './prompts.js';
+import type { PromptMap } from './prompts.js';
 
 const { agentSettings, globalControls, auditLog } = schema;
 
@@ -92,9 +92,18 @@ export function makeRunGate(db: Db) {
   return async (run: Run): Promise<string | null> => {
     const state = await getControlState(db, run.brandId);
     if (state.allPaused) return 'all';
-    for (const a of agentsForRun(run)) {
+    const needed = agentsForRun(run);
+    for (const a of needed) {
       const s = state.agents[a];
       if (s?.paused || s?.disabled) return `agent:${a}`;
+    }
+    // A board step of a registry agent that is a draft again (or not built yet) waits for it.
+    if (needed.some((a) => !AGENTS.some((d) => d.id === a))) {
+      const agents = await listAgents(db, run.brandId);
+      for (const a of needed) {
+        const ref = agents.find((r) => r.id === a);
+        if (ref && !ref.code && ref.status !== 'active') return `agent:${a}`;
+      }
     }
     return null;
   };
@@ -133,11 +142,23 @@ export class AgentControls {
     return models;
   }
 
-  async modelOf(brandId: string, def: AgentDefinition) {
+  /** Model per registry (non-code) agent: its panel override or LLM_MODEL_<role>. */
+  async agentModels(brandId: string): Promise<Record<string, string>> {
+    const state = await getControlState(this.d.db, brandId);
+    const out: Record<string, string> = {};
+    for (const a of await listAgents(this.d.db, brandId)) {
+      if (a.code || !a.modelRole) continue;
+      const o = state.agents[a.id]?.modelOverride;
+      out[a.id] = o && this.allowedModels().includes(o) ? o : this.d.config.llm.models[a.modelRole];
+    }
+    return out;
+  }
+
+  async modelOf(brandId: string, def: Pick<AgentRef, 'id' | 'modelRole'>) {
     const state = await getControlState(this.d.db, brandId);
     const stored = state.agents[def.id]?.modelOverride ?? null;
     const override = stored && this.allowedModels().includes(stored) ? stored : null;
-    const env = this.d.config.llm.models[def.modelRole];
+    const env = this.d.config.llm.models[def.modelRole ?? 'worker'];
     return {
       name: override ?? env,
       env,
@@ -147,14 +168,23 @@ export class AgentControls {
     };
   }
 
-  prompts(brandId: string): Promise<Record<AgentName, ActivePrompt>> {
-    return activePrompts(this.d.db, brandId);
+  /** Active prompts: code agents plus every registry agent that has a prompt. */
+  async prompts(brandId: string): Promise<PromptMap> {
+    const extra = (await listAgents(this.d.db, brandId))
+      .filter((a) => !a.code && a.promptAgent)
+      .map((a) => a.promptAgent!);
+    return activePrompts(this.d.db, brandId, extra);
+  }
+
+  /** Agent by id (code or registry); humans and unknown ids -> null. */
+  agent(brandId: string, agentId: string): Promise<AgentRef | null> {
+    return resolveAgent(this.d.db, brandId, agentId);
   }
 
   // ------------------------------------------------------------------ pause / on-off
 
   async setPaused(brandId: string, agentId: string, paused: boolean, actor: Actor) {
-    const def = agentById(agentId);
+    const def = await this.agent(brandId, agentId);
     if (!def) return { ok: false, message: 'Нет такого агента' };
     const changed = await this.updateAgent(brandId, def.id, { paused }, actor, (s) =>
       s.paused === paused ? null : paused ? 'agent_paused' : 'agent_resumed',
@@ -170,7 +200,7 @@ export class AgentControls {
   }
 
   async setDisabled(brandId: string, agentId: string, disabled: boolean, actor: Actor) {
-    const def = agentById(agentId);
+    const def = await this.agent(brandId, agentId);
     if (!def) return { ok: false, message: 'Нет такого агента' };
     const changed = await this.updateAgent(brandId, def.id, { disabled }, actor, (s) =>
       s.disabled === disabled ? null : disabled ? 'agent_disabled' : 'agent_enabled',
@@ -223,27 +253,29 @@ export class AgentControls {
   // ------------------------------------------------------------------ model
 
   async setModel(brandId: string, agentId: string, model: string, actor: Actor) {
-    const def = agentById(agentId);
+    const def = await this.agent(brandId, agentId);
     if (!def) return { ok: false, message: 'Нет такого агента' };
+    if (!def.modelRole) return { ok: false, message: `${def.name} не использует LLM` };
     if (!this.allowedModels().includes(model))
       return { ok: false, message: `Модели ${model} нет в прайс-листе — выбрать её нельзя` };
     return this.changeModel(brandId, def, model, actor);
   }
 
-  resetModel(brandId: string, agentId: string, actor: Actor) {
-    const def = agentById(agentId);
-    if (!def) return Promise.resolve({ ok: false, message: 'Нет такого агента' });
+  async resetModel(brandId: string, agentId: string, actor: Actor): Promise<ControlResult> {
+    const def = await this.agent(brandId, agentId);
+    if (!def) return { ok: false, message: 'Нет такого агента' };
+    if (!def.modelRole) return { ok: false, message: `${def.name} не использует LLM` };
     return this.changeModel(brandId, def, null, actor);
   }
 
   private async changeModel(
     brandId: string,
-    def: AgentDefinition,
+    def: AgentRef,
     override: string | null,
     actor: Actor,
   ): Promise<ControlResult> {
     const before = await this.modelOf(brandId, def);
-    const env = this.d.config.llm.models[def.modelRole];
+    const env = this.d.config.llm.models[def.modelRole ?? 'worker'];
     const after = override ?? env;
     if (
       !before.ignoredOverride &&
@@ -270,22 +302,32 @@ export class AgentControls {
 
   // ------------------------------------------------------------------ prompts
 
-  savePrompt(brandId: string, agentId: string, text: string, actor: Actor): Promise<PromptChange> {
-    const def = agentById(agentId);
-    if (!def) return Promise.resolve({ ok: false, message: 'Нет такого агента' });
-    return savePromptVersion(this.d.db, brandId, def.prompt, text, actor);
+  async savePrompt(
+    brandId: string,
+    agentId: string,
+    text: string,
+    actor: Actor,
+  ): Promise<PromptChange> {
+    const def = await this.agent(brandId, agentId);
+    if (!def?.promptAgent) return { ok: false, message: 'Нет такого агента' };
+    return savePromptVersion(this.d.db, brandId, def.promptAgent, text, actor);
   }
 
-  activatePrompt(brandId: string, agentId: string, versionId: string, actor: Actor) {
-    const def = agentById(agentId);
-    if (!def) return Promise.resolve({ ok: false, message: 'Нет такого агента' });
-    return activatePromptVersion(this.d.db, brandId, def.prompt, versionId, actor);
+  async activatePrompt(
+    brandId: string,
+    agentId: string,
+    versionId: string,
+    actor: Actor,
+  ): Promise<PromptChange> {
+    const def = await this.agent(brandId, agentId);
+    if (!def?.promptAgent) return { ok: false, message: 'Нет такого агента' };
+    return activatePromptVersion(this.d.db, brandId, def.promptAgent, versionId, actor);
   }
 
   // ------------------------------------------------------------------ helpers
 
   /** Held runs are delivered again; those still blocked are held again by the gate. */
-  private async release() {
+  async release() {
     const n = await releaseWaitingRuns(this.d.db, this.d.enqueue);
     if (n > 0) this.d.logger.info({ runs: n }, 'waiting runs released');
   }

@@ -260,7 +260,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
       expect(r.message).toMatch(msg);
     }
 
-    const edited = `${h1.active.text}\n\nДобавь в план хотя бы одну карусель.`;
+    const edited = `${h1.active!.text}\n\nДобавь в план хотя бы одну карусель.`;
     const saved = await s.wf.controls.savePrompt(s.brand.id, 'ceo', edited, OWNER);
     expect(saved).toMatchObject({ ok: true, label: expect.stringMatching(/^ceo@2#/) as unknown });
     const h2 = await promptHistory(t.db, s.brand.id, 'ceo');
@@ -279,7 +279,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
     // One-click rollback to v1, audited from -> to.
     const v1 = h2.versions.find((v) => v.version === 1)!;
     expect((await s.wf.controls.activatePrompt(s.brand.id, 'ceo', v1.id, OWNER)).ok).toBe(true);
-    expect((await promptHistory(t.db, s.brand.id, 'ceo')).active.version).toBe(1);
+    expect((await promptHistory(t.db, s.brand.id, 'ceo')).active!.version).toBe(1);
     expect((await s.audit('prompt_activated'))[0]!.details).toEqual({
       agent: 'ceo',
       from: saved.label,
@@ -300,7 +300,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
       { agent: 'ceo', label: expect.stringMatching(/^ceo@3#/) as unknown, activated: false },
     ]);
     const h3 = await promptHistory(t.db, s.brand.id, 'ceo');
-    expect(h3.active.version).toBe(1);
+    expect(h3.active!.version).toBe(1);
     expect(h3.pendingFile).toMatchObject({ version: 3, source: 'file', fileVersion: 9 });
     // Running the sync again changes nothing.
     expect(await syncPromptFiles(t.db, s.brand.id, dir)).toEqual([]);

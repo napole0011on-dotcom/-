@@ -60,7 +60,8 @@ import {
   type NodeInput,
   type UpstreamResult,
 } from './nodes.js';
-import type { LoadedPrompt } from './prompts.js';
+import { constructorExecutor } from './constructor.js';
+import { constructorSpecOf, resolveAgent } from './agent-registry.js';
 import { CeoPlan, type CopyItem, type Deliverable } from './schemas.js';
 import { currentPipeline, loadWorkspace } from './workspace.js';
 
@@ -885,7 +886,8 @@ export class Workflow {
     const pipe = await this.pipelineOf(task.id);
     const step = pipe.steps.find((s) => s.agent === input.agent);
     if (!step) throw new PermanentError('step_missing', `Step ${input.agent} is not in the plan`);
-    const exec = this.d.executors?.[input.agent];
+    const exec =
+      this.d.executors?.[input.agent] ?? (await this.registryExecutor(task, input.agent));
     if (!exec)
       throw new PermanentError('no_executor', `Агент ${step.name} пока не умеет выполнять шаги`);
     const plan = await this.plan(task.id);
@@ -1088,6 +1090,15 @@ export class Workflow {
     return run;
   }
 
+  /** Constructor agents run from their registry row (fields, criteria) and prompt. */
+  private async registryExecutor(task: TaskRow, agentId: string): Promise<NodeExecutor | null> {
+    const ref = await resolveAgent(this.d.db, task.brandId, agentId);
+    if (!ref || ref.kind !== 'constructor') return null;
+    const { spec } = constructorSpecOf(ref);
+    if (!spec) return null;
+    return constructorExecutor({ id: ref.id, name: ref.name, role: ref.role, spec });
+  }
+
   /** Every agent call goes through the registry + invocation log (code and board agents). */
   private async invoke<T>(
     agentId: string,
@@ -1104,9 +1115,7 @@ export class Workflow {
       throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
     const role = (code?.modelRole ?? node?.modelRole ?? null) as
       keyof AgentContext['models'] | null;
-    const prompt = (ctx.prompts as Record<string, LoadedPrompt | undefined>)[
-      code?.prompt ?? agentId
-    ];
+    const prompt = ctx.prompts[code?.prompt ?? agentId];
     return invokeAgent(
       this.d.db,
       { id: agentId, name: code?.name ?? node!.name },
@@ -1114,7 +1123,7 @@ export class Workflow {
         brandId: task.brandId,
         taskId: task.id,
         runId: run.id,
-        model: role ? ctx.models[role] : 'tool',
+        model: ctx.agentModels[agentId] ?? (role ? ctx.models[role] : 'tool'),
         promptVersion: prompt?.version ?? `${agentId}@code`,
       },
       fn,
@@ -1126,6 +1135,7 @@ export class Workflow {
       llm: this.d.llm,
       models: await this.controls.effectiveModels(task.brandId),
       prompts: await this.controls.prompts(task.brandId),
+      agentModels: await this.controls.agentModels(task.brandId),
       brand: await getBrand(this.d.db, task.brandId),
       taskId: task.id,
       runId: run.id,

@@ -90,6 +90,7 @@ async function main() {
       llm,
       models: config.llm.models,
       prompts: await activePrompts(db, brand.id),
+      agentModels: {},
       brand: await getBrand(db, brand.id),
       taskId,
       runId: null,

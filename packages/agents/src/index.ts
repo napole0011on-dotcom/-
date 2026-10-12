@@ -21,3 +21,5 @@ export * from './graph.js';
 export * from './workspace.js';
 export * from './events.js';
 export * from './nodes.js';
+export * from './constructor.js';
+export * from './agent-registry.js';

@@ -1,7 +1,7 @@
 import type { LlmConfig } from '@cms/core';
 import type { LlmClient } from '@cms/engine';
 import type { BrandRecord } from '../brand.js';
-import type { AgentName, LoadedPrompt } from '../prompts.js';
+import type { PromptMap } from '../prompts.js';
 
 /** Everything an agent may use. Agents have no tools with side effects: they only return data. */
 export interface AgentContext {
@@ -9,7 +9,9 @@ export interface AgentContext {
   /** Effective models (LLM_MODEL_* in .env, or the panel override per agent). */
   models: LlmConfig['models'];
   /** Active prompt version per agent, resolved once per run (DB is the source of truth). */
-  prompts: Record<AgentName, LoadedPrompt>;
+  prompts: PromptMap;
+  /** Model per registry agent (constructor agents may have their own override in the panel). */
+  agentModels: Record<string, string>;
   brand: BrandRecord;
   taskId: string;
   runId: string | null;
