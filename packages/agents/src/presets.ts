@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Actor } from '@cms/core';
+import { TransientError, type Actor } from '@cms/core';
 import { withIdempotency } from '@cms/engine';
 import {
   activateConstructorAgent,
@@ -10,7 +10,7 @@ import {
   updateConstructorAgent,
 } from './agent-registry.js';
 import { runAgentTest, type AgentTestDeps } from './agent-test.js';
-import type { OutputField } from './constructor.js';
+import { ConstructorSpec, specHash, type OutputField } from './constructor.js';
 import { savePromptVersion } from './prompt-store.js';
 import { PROMPTS_DIR, parsePrompt } from './prompts.js';
 
@@ -188,10 +188,9 @@ const presetPrompt = (id: string) =>
 export async function installPresets(d: AgentTestDeps, brandId: string): Promise<string[]> {
   const done: string[] = [];
   for (const p of PRESETS) {
-    const { result, replayed } = await withIdempotency(
-      d.db,
-      `preset:${brandId}:${p.id}@1`,
-      async () => {
+    let out: { result: string; replayed: boolean };
+    try {
+      out = await withIdempotency(d.db, `preset:${brandId}:${p.id}@1`, async () => {
         let ref = await resolveAgent(d.db, brandId, p.id);
         if (!ref && p.create) {
           const c = await createConstructorAgent(
@@ -204,7 +203,15 @@ export async function installPresets(d: AgentTestDeps, brandId: string): Promise
           ref = await resolveAgent(d.db, brandId, p.id);
         }
         if (!ref || ref.kind !== 'constructor' || ref.status === 'active') return 'skipped';
-        if (constructorSpecOf(ref).spec) return 'skipped'; // the owner already built it
+        // The owner already built it differently -> leave it. Same fields (a start that crashed
+        // halfway) -> finish the installation.
+        const spec = constructorSpecOf(ref).spec;
+        if (
+          spec &&
+          specHash(spec) !==
+            specHash(ConstructorSpec.parse({ fields: p.fields, criteria: p.criteria }))
+        )
+          return 'skipped';
         const upd = await updateConstructorAgent(
           d.db,
           brandId,
@@ -220,8 +227,13 @@ export async function installPresets(d: AgentTestDeps, brandId: string): Promise
           d.controls.release(),
         );
         return act.ok ? 'activated' : `failed: ${act.message}`;
-      },
-    );
+      });
+    } catch (err) {
+      // The bot and the API start together: the other process is installing this preset now.
+      if (err instanceof TransientError) continue;
+      throw err;
+    }
+    const { result, replayed } = out;
     if (replayed) continue;
     if (result === 'activated') done.push(p.id);
     else if (result !== 'skipped') d.logger.warn({ preset: p.id, result }, 'preset not installed');

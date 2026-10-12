@@ -91,12 +91,12 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
       status: 'active',
     });
     const testDeps = { db: t.db, config, controls: wf.controls, logger: silentLogger };
-    expect(await installPresets(testDeps, brand.id)).toEqual([
-      'seo',
-      'reels',
-      'video_summary',
-      'mailer_draft',
+    // The bot and the API start at the same time: both install, neither crashes, each preset once.
+    const [a, b] = await Promise.all([
+      installPresets(testDeps, brand.id),
+      installPresets(testDeps, brand.id),
     ]);
+    expect([...a, ...b].sort()).toEqual(['mailer_draft', 'reels', 'seo', 'video_summary']);
     expect(await installPresets(testDeps, brand.id)).toEqual([]); // once
     const seo = await resolveAgent(t.db, brand.id, 'seo');
     expect(seo).toMatchObject({ status: 'active', kind: 'constructor' });
