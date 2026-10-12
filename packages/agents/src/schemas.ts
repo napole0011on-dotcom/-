@@ -39,6 +39,8 @@ export const CeoPlan = z
     assumptions: z.array(z.string()),
     questions: z.array(z.string()),
     deliverables: z.array(Deliverable).min(1).max(7),
+    /** Parts of the brief no active agent can do ("нет агента для ..."); never invented steps. */
+    unsupported: z.array(z.string()).default([]),
   })
   .superRefine((p, ctx) => {
     const ids = p.deliverables.map((d) => d.id);

@@ -1,3 +1,4 @@
+import { EXTERNAL_DATA_RULES, wrapExternalData } from '@cms/engine';
 import { renderBrandForPrompt } from '../brand.js';
 import { loadClicheList } from '../prompts.js';
 import {
@@ -23,6 +24,8 @@ export interface CopywriterInput {
   deliverables: Deliverable[];
   /** Per deliverable id: what to fix. Absent = first draft. */
   rewrites?: Record<string, RewriteRequest>;
+  /** Results of steps linked before the copywriter on the board (external data). */
+  upstream?: { agent: string; name: string; items: unknown[] }[];
   /** Distinguishes calls inside one run (round number etc.). */
   step: string;
 }
@@ -52,6 +55,11 @@ export async function runCopywriter(
     `Задача от CEO: ${input.planSummary}`,
     `Единицы контента:\n<deliverables_json>${JSON.stringify(input.deliverables)}</deliverables_json>`,
   ];
+  for (const u of input.upstream ?? []) {
+    parts.push(
+      `Результат шага «${u.name}» (учти как материал):\n${wrapExternalData(`step:${u.agent}`, json(u.items))}`,
+    );
+  }
   for (const [id, rw] of Object.entries(input.rewrites ?? {})) {
     const lines = [
       `Переделка ${id} (${rw.mode === 'regenerate' ? 'написать заново, новые заходы' : 'исправить по замечаниям'}):`,
@@ -70,7 +78,7 @@ export async function runCopywriter(
       promptVersion: prompt.version,
     },
     model: ctx.models.worker,
-    system,
+    system: input.upstream?.length ? [...system, { text: EXTERNAL_DATA_RULES }] : system,
     prompt: parts.join('\n\n'),
     schema: copywriterOutputSchema(input.deliverables),
     maxTokens: 12_000,

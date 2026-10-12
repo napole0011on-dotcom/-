@@ -2,6 +2,8 @@ import type { Notifier } from '@cms/providers';
 import type { Verdict } from './agents/critic.js';
 import type { CeoPlan, CopyItem, Deliverable } from './schemas.js';
 import type { PlanEstimate } from './estimate.js';
+import type { Pipeline } from './graph.js';
+import type { GenericVerdict } from './nodes.js';
 
 /** What the owner sees at gate 1. */
 export interface PlanView {
@@ -13,6 +15,8 @@ export interface PlanView {
   estimate: PlanEstimate;
   spentUsd: number;
   taskBudgetUsd: number;
+  /** Steps from the board (agent links) this plan will run, in order. */
+  pipeline: Pipeline;
 }
 
 export interface PackageItemView {
@@ -28,11 +32,25 @@ export interface PackageItemView {
   ownerComment: string | null;
 }
 
+/** A result of any other agent of the graph (SEO, Image, ...), shown at gate 2. */
+export interface NodeItemView {
+  artifactId: string;
+  version: number;
+  agent: string;
+  agentName: string;
+  title: string;
+  lines: string[];
+  critic: GenericVerdict | null;
+  criticRejected: boolean;
+  ownerComment: string | null;
+}
+
 /** What the owner sees at gate 2 (whole package or only the items that changed). */
 export interface PackageView {
   taskId: string;
   title: string;
   items: PackageItemView[];
+  nodeItems: NodeItemView[];
   /** Items of the package still waiting for a decision (including the ones shown). */
   pendingCount: number;
   totalCount: number;

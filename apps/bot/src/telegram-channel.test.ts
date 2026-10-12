@@ -75,6 +75,15 @@ describe('TelegramChannel', () => {
         assumptions: ['a'],
         questions: ['q?'],
         deliverables: [item.deliverable],
+        unsupported: ['нет агента для съёмки видео'],
+      },
+      pipeline: {
+        steps: [
+          { agent: 'copywriter', name: 'Копирайтер', after: [], reviewed: true },
+          { agent: 'seo', name: 'SEO-менеджер', after: ['copywriter'], reviewed: false },
+        ],
+        inactive: [{ agent: 'image', name: 'Image', reason: 'агент ещё не создан' }],
+        links: [],
       },
       estimate: {
         expectedUsd: 0.12,
@@ -90,6 +99,9 @@ describe('TelegramChannel', () => {
     expect(p).toMatchObject({ chat_id: 42, parse_mode: 'HTML' });
     expect(String(p.text)).toMatch(/Неделя &lt;осень&gt;/);
     expect(String(p.text)).toMatch(/максимум ~\$0\.40.*Лимит задачи \$2\.00/s);
+    expect(String(p.text)).toMatch(/2\. SEO-менеджер — после: Копирайтер/);
+    expect(String(p.text)).toMatch(/Image — агент ещё не создан/);
+    expect(String(p.text)).toMatch(/нет агента для съёмки видео/);
     const kb = (p.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard;
     expect(kb[0]!.map((b) => b.text)).toEqual(['✅ Утвердить', '✏️ Изменить', '✖️ Отменить']);
   });
@@ -100,6 +112,7 @@ describe('TelegramChannel', () => {
       taskId: UUID,
       title: 't',
       items: [item],
+      nodeItems: [],
       pendingCount: 2,
       totalCount: 2,
       spentUsd: 0.3,

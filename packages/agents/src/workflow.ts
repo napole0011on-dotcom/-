@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   InvalidTransitionError,
   PermanentError,
@@ -40,10 +41,28 @@ import { invokeAgent } from './invocations.js';
 import { agentById } from './registry.js';
 import { AgentControls, makeRunGate } from './controls.js';
 import type { AgentResult } from './agents/context.js';
-import type { OwnerChannel, PackageItemView } from './channel.js';
+import type { NodeItemView, OwnerChannel, PackageItemView } from './channel.js';
 import { estimatePlan } from './estimate.js';
-import { renderPackageMarkdown, writePackage, type ExportItem } from './export.js';
+import { emitEvent } from './events.js';
+import {
+  renderPackageMarkdown,
+  writePackage,
+  type ExportItem,
+  type ExportNodeItem,
+} from './export.js';
+import { COPYWRITER, DEFAULT_PIPELINE, type Pipeline, type PipelineStep } from './graph.js';
+import {
+  nodeSlot,
+  nodeSlotPrefix,
+  renderGeneric,
+  type NodeContent,
+  type NodeExecutor,
+  type NodeInput,
+  type UpstreamResult,
+} from './nodes.js';
+import type { LoadedPrompt } from './prompts.js';
 import { CeoPlan, type CopyItem, type Deliverable } from './schemas.js';
+import { currentPipeline, loadWorkspace } from './workspace.js';
 
 /** Critic may send a text back to the copywriter at most this many times. */
 export const MAX_CRITIC_REVISIONS = 2;
@@ -54,7 +73,19 @@ const SYSTEM: Actor = { kind: 'system', id: 'workflow' };
 
 export type RunInput =
   | { kind: 'plan'; ownerComment?: string | null }
-  | { kind: 'copy' }
+  | { kind: 'copy'; inputSig?: string }
+  | {
+      kind: 'node';
+      agent: string;
+      inputSig: string;
+      /** The Critic reviews this step (then it also waits while the Critic is paused). */
+      reviewed?: boolean;
+      rework?: {
+        baseArtifactId: string;
+        ownerComment: string | null;
+        mode: 'revise' | 'regenerate';
+      };
+    }
   | {
       kind: 'rework';
       deliverableId: string;
@@ -71,6 +102,8 @@ export interface CopyContent extends Record<string, unknown> {
   criticRound: number;
   criticRejected: boolean;
   ownerComment: string | null;
+  /** Hash of the upstream results the texts were written from ("root" = only the plan). */
+  inputSig?: string;
 }
 
 export interface WorkflowDeps {
@@ -81,6 +114,8 @@ export interface WorkflowDeps {
   config: AppConfig;
   pricing: ModelPricing;
   logger: Logger;
+  /** Executors for graph steps other than the copywriter, by agent id (constructor, code, tool). */
+  executors?: Record<string, NodeExecutor>;
 }
 
 export interface DecisionResult {
@@ -169,13 +204,15 @@ export class Workflow {
         reason: 'plan approved',
         details: { planVersion: plan.version },
       });
-      await this.startRun(
-        task.brandId,
+      await emitEvent(this.d.db, {
+        brandId: task.brandId,
+        agent: 'me',
         taskId,
-        'copywriter',
-        `task:${taskId}:copy:plan-v${plan.version}`,
-        { kind: 'copy' },
-      );
+        kind: 'decision',
+        text: `Вы · план v${plan.version} утверждён`,
+      });
+      // The steps and their order come from the plan's snapshot of the board, not the live board.
+      await this.advance(taskId, null);
       return { ok: true, message: 'План утверждён, команда начала работу' };
     }
     if (action === 'change') {
@@ -209,8 +246,8 @@ export class Workflow {
     opts: { variant?: number | null; comment?: string | null } = {},
   ): Promise<DecisionResult> {
     const artifact = await getArtifact(this.d.db, artifactId);
-    if (!artifact || !artifact.slot.startsWith('copy:'))
-      return { ok: false, message: 'Текст не найден' };
+    if (!artifact || !(artifact.slot.startsWith('copy:') || artifact.slot.startsWith('node:')))
+      return { ok: false, message: 'Результат не найден' };
     const latest = await latestArtifact(this.d.db, artifact.taskId, artifact.slot);
     if (latest?.id !== artifact.id)
       return { ok: false, message: `Это устаревшая версия (актуальная — v${latest?.version})` };
@@ -253,6 +290,22 @@ export class Workflow {
         details: { artifactId },
       });
     }
+    if (artifact.slot.startsWith('node:')) {
+      const nc = artifact.content as NodeContent;
+      await this.startRun(task.brandId, task.id, nc.agent, `rework:${artifact.id}`, {
+        kind: 'node',
+        agent: nc.agent,
+        inputSig: nc.inputSig,
+        reviewed: (await this.pipelineOf(task.id)).steps.find((x) => x.agent === nc.agent)
+          ?.reviewed,
+        rework: {
+          baseArtifactId: artifact.id,
+          ownerComment: opts.comment ?? null,
+          mode: action === 'revise' ? 'revise' : 'regenerate',
+        },
+      });
+      return { ok: true, message: action === 'revise' ? 'Отправил на правку' : 'Делаю заново' };
+    }
     const content = artifact.content as CopyContent;
     await this.startRun(task.brandId, task.id, 'copywriter', `rework:${artifact.id}`, {
       kind: 'rework',
@@ -265,7 +318,7 @@ export class Workflow {
   }
 
   async approveAll(taskId: string, actor: Actor): Promise<DecisionResult> {
-    const items = await latestArtifacts(this.d.db, taskId, 'copy:');
+    const items = await this.packageArtifacts(taskId);
     const decided = await finalDecisions(this.d.db, taskId);
     let n = 0;
     for (const a of items) {
@@ -382,9 +435,11 @@ export class Workflow {
       case 'plan':
         return this.planStep(run, task, ctx, input.ownerComment ?? null);
       case 'copy':
-        return this.copyStep(run, task, ctx);
+        return this.copyStep(run, task, ctx, input);
       case 'rework':
         return this.reworkStep(run, task, ctx, input);
+      case 'node':
+        return this.nodeStep(run, task, ctx, input);
       case 'export':
         return this.exportStep(run, task);
     }
@@ -392,9 +447,17 @@ export class Workflow {
 
   private async planStep(run: Run, task: TaskRow, ctx: AgentContext, ownerComment: string | null) {
     const previous = await latestArtifact(this.d.db, task.id, 'plan');
+    // The plan carries a snapshot of the board: approving the plan freezes the steps for this task.
+    const pipeline = await currentPipeline(this.d.db, task.brandId);
+    const ws = await loadWorkspace(this.d.db, task.brandId);
+    const team = pipeline.steps.map((s) => {
+      const n = ws.nodes.find((x) => x.id === s.agent);
+      return { name: s.name, role: n?.role ?? '' };
+    });
     const result = await this.invoke('ceo', run, task, ctx, () =>
       runCeo(ctx, {
         brief: briefText(task),
+        team,
         ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
         ...(ownerComment ? { ownerComment } : {}),
       }),
@@ -405,7 +468,7 @@ export class Workflow {
       runId: run.id,
       slot: 'plan',
       kind: 'plan',
-      content: result.output,
+      content: { ...result.output, pipeline },
       agent: 'ceo',
       promptVersion: result.promptVersion,
       model: result.model,
@@ -425,15 +488,38 @@ export class Workflow {
         estimate,
         spentUsd: spend.spentUsd,
         taskBudgetUsd: spend.limitUsd,
+        pipeline,
       }),
     );
+    await emitEvent(this.d.db, {
+      brandId: task.brandId,
+      agent: 'ceo',
+      taskId: task.id,
+      runId: run.id,
+      kind: 'plan_ready',
+      text: `CEO · план v${artifact.version} готов, ждёт вас`,
+      costUsd: result.costUsd,
+    });
     return { planArtifactId: artifact.id, version: artifact.version, costUsd: result.costUsd };
   }
 
-  private async copyStep(run: Run, task: TaskRow, ctx: AgentContext) {
+  private async copyStep(run: Run, task: TaskRow, ctx: AgentContext, input: { inputSig?: string }) {
     const plan = await this.plan(task.id);
-    const created = await this.writeAndReview(run, task, ctx, plan, plan.deliverables, {});
-    await this.finishReview(run, task, created, false);
+    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === COPYWRITER);
+    const upstream = step ? await this.upstreamOf(task.id, step) : [];
+    const created = await this.writeAndReview(
+      run,
+      task,
+      ctx,
+      plan,
+      plan.deliverables,
+      {},
+      {
+        inputSig: input.inputSig ?? 'root',
+        upstream,
+      },
+    );
+    await this.advance(task.id, run);
     return { artifacts: created.map((a) => a.id) };
   }
 
@@ -449,14 +535,26 @@ export class Workflow {
     if (!base || !deliverable)
       throw new PermanentError('rework_target_missing', 'Rework target not found');
     const content = base.content as CopyContent;
-    const created = await this.writeAndReview(run, task, ctx, plan, [deliverable], {
-      [deliverable.id]: {
-        previous: content.item,
-        ownerComment: input.ownerComment,
-        mode: input.mode,
+    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === COPYWRITER);
+    const created = await this.writeAndReview(
+      run,
+      task,
+      ctx,
+      plan,
+      [deliverable],
+      {
+        [deliverable.id]: {
+          previous: content.item,
+          ownerComment: input.ownerComment,
+          mode: input.mode,
+        },
       },
-    });
-    await this.finishReview(run, task, created, true);
+      {
+        inputSig: content.inputSig ?? 'root',
+        upstream: step ? await this.upstreamOf(task.id, step) : [],
+      },
+    );
+    await this.advance(task.id, run);
     return { artifacts: created.map((a) => a.id) };
   }
 
@@ -472,6 +570,7 @@ export class Workflow {
     plan: CeoPlan,
     deliverables: Deliverable[],
     initial: Record<string, RewriteRequest>,
+    from: { inputSig: string; upstream: UpstreamResult[] },
   ): Promise<Artifact[]> {
     const finals: Artifact[] = [];
     let pending = deliverables;
@@ -488,6 +587,7 @@ export class Workflow {
           planSummary: plan.summary,
           deliverables: pending,
           rewrites,
+          upstream: from.upstream,
           step: `r${round}`,
         }),
       );
@@ -520,6 +620,7 @@ export class Workflow {
             criticRound: round + 1,
             criticRejected: !verdict.passed && last,
             ownerComment: ownerComments[d.id] ?? null,
+            inputSig: from.inputSig,
           } satisfies CopyContent,
           agent: 'copywriter',
           promptVersion: `${copy.promptVersion}+${review.promptVersion}`,
@@ -536,6 +637,19 @@ export class Workflow {
           };
         }
       }
+      const passedN = pending.length - failed.length;
+      await emitEvent(this.d.db, {
+        brandId: task.brandId,
+        agent: 'critic',
+        taskId: task.id,
+        runId: run.id,
+        kind: 'verdict',
+        text:
+          failed.length === 0
+            ? `Critic · вердикт: принято (${passedN})`
+            : `Critic · вердикт: доработать ${failed.length}${passedN ? `, принято ${passedN}` : ''}`,
+        costUsd: review.costUsd,
+      });
       pending = failed;
       rewrites = nextRewrites;
     }
@@ -544,38 +658,315 @@ export class Workflow {
     return finals.sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot));
   }
 
-  /** Moves the task to gate 2 (unless another rework is still running) and shows the items to the owner. */
-  private async finishReview(run: Run, task: TaskRow, created: Artifact[], isUpdate: boolean) {
-    const others = await this.d.db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(
-        sql`${runs.taskId} = ${task.id} and ${runs.id} <> ${run.id} and ${runs.agent} = 'copywriter' and ${runs.status} in ('queued', 'running')`,
-      );
-    if (others.length === 0) await this.moveTo(task.id, 'awaiting_final_approval');
+  // ---------------------------------------------------------------- graph execution
 
-    const all = await latestArtifacts(this.d.db, task.id, 'copy:');
+  /** Steps of this task: the board snapshot stored in the plan (old plans: copywriter only). */
+  private async pipelineOf(taskId: string): Promise<Pipeline> {
+    const a = await latestArtifact(this.d.db, taskId, 'plan');
+    const p = (a?.content as { pipeline?: Pipeline } | undefined)?.pipeline;
+    return p?.steps?.length ? p : DEFAULT_PIPELINE;
+  }
+
+  private async nodeArtifacts(taskId: string): Promise<Artifact[]> {
+    return latestArtifacts(this.d.db, taskId, 'node:');
+  }
+
+  /** Everything the owner decides on at gate 2: texts and results of the other steps. */
+  private async packageArtifacts(taskId: string): Promise<Artifact[]> {
+    return [
+      ...(await latestArtifacts(this.d.db, taskId, 'copy:')),
+      ...(await this.nodeArtifacts(taskId)),
+    ];
+  }
+
+  private async stepArtifacts(taskId: string, agent: string): Promise<Artifact[]> {
+    return agent === COPYWRITER
+      ? latestArtifacts(this.d.db, taskId, 'copy:')
+      : latestArtifacts(this.d.db, taskId, nodeSlotPrefix(agent));
+  }
+
+  private static sigOf(arts: Artifact[]): string {
+    if (arts.length === 0) return 'root';
+    return createHash('sha256')
+      .update(
+        arts
+          .map((a) => a.id)
+          .sort()
+          .join(','),
+      )
+      .digest('hex')
+      .slice(0, 16);
+  }
+
+  /** Results of the steps this step waits for, as data for its prompt. */
+  private async upstreamOf(taskId: string, step: PipelineStep): Promise<UpstreamResult[]> {
+    const out: UpstreamResult[] = [];
+    for (const dep of step.after) {
+      const arts = await this.stepArtifacts(taskId, dep);
+      if (dep === COPYWRITER) {
+        out.push({
+          agent: dep,
+          name: 'Копирайтер',
+          items: arts.map((a) => {
+            const c = a.content as CopyContent;
+            return {
+              deliverable: c.deliverable,
+              variants: c.item.variants,
+              critic: c.critic.summary,
+            };
+          }),
+        });
+      } else {
+        const c = arts[0]?.content as NodeContent | undefined;
+        out.push({
+          agent: dep,
+          name: c?.name ?? dep,
+          items: arts.map((a) => (a.content as NodeContent).output),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Which step each queued/running run of the task belongs to (except the current one). */
+  private async activeSteps(taskId: string, exceptRunId: string | null): Promise<Set<string>> {
+    const rows = await this.d.db
+      .select({ id: runs.id, input: runs.input })
+      .from(runs)
+      .where(sql`${runs.taskId} = ${taskId} and ${runs.status} in ('queued', 'running')`);
+    const out = new Set<string>();
+    for (const r of rows) {
+      if (r.id === exceptRunId) continue;
+      const i = r.input as RunInput;
+      if (i.kind === 'copy' || i.kind === 'rework') out.add(COPYWRITER);
+      else if (i.kind === 'node') out.add(i.agent);
+    }
+    return out;
+  }
+
+  /**
+   * Drives the graph after the plan is approved and after every step: starts each step whose
+   * upstream steps are done (fresh: produced from the current upstream results), re-runs a step
+   * when its upstream changed (e.g. a text was revised), shows finished results to the owner and
+   * moves the task to gate 2 when nothing is left to run. Safe to call repeatedly.
+   */
+  private async advance(taskId: string, current: Run | null): Promise<void> {
+    const task = await this.task(taskId);
+    if (!['in_progress', 'in_review', 'revision', 'awaiting_final_approval'].includes(task.status))
+      return;
+    const pipe = await this.pipelineOf(taskId);
+    const planArt = await latestArtifact(this.d.db, taskId, 'plan');
+    const active = await this.activeSteps(taskId, current?.id ?? null);
+    const state = new Map<string, { fresh: boolean; arts: Artifact[] }>();
+    for (const step of pipe.steps) {
+      const ready = step.after.every((d) => state.get(d)?.fresh && !active.has(d));
+      if (!ready) {
+        state.set(step.agent, { fresh: false, arts: [] });
+        continue;
+      }
+      const sig = Workflow.sigOf(step.after.flatMap((d) => state.get(d)!.arts));
+      const arts = await this.stepArtifacts(taskId, step.agent);
+      const fresh =
+        arts.length > 0 &&
+        arts.every((a) => ((a.content as { inputSig?: string }).inputSig ?? 'root') === sig);
+      state.set(step.agent, { fresh, arts });
+      if (fresh || active.has(step.agent)) continue;
+      if (step.agent === COPYWRITER) {
+        await this.startRun(
+          task.brandId,
+          taskId,
+          COPYWRITER,
+          `task:${taskId}:copy:plan-v${planArt?.version ?? 1}${sig === 'root' ? '' : `:${sig}`}`,
+          { kind: 'copy', inputSig: sig },
+        );
+      } else {
+        await this.startRun(
+          task.brandId,
+          taskId,
+          step.agent,
+          `task:${taskId}:node:${step.agent}:${sig}`,
+          {
+            kind: 'node',
+            agent: step.agent,
+            inputSig: sig,
+            reviewed: step.reviewed,
+          },
+        );
+      }
+      active.add(step.agent);
+    }
+
+    const settled = (agent: string) => state.get(agent)?.fresh === true && !active.has(agent);
+    const downstream = (agent: string): string[] => {
+      const direct = pipe.steps.filter((s) => s.after.includes(agent)).map((s) => s.agent);
+      return [...direct, ...direct.flatMap(downstream)];
+    };
+    // A step's results are shown once nothing after it still needs to run on them.
+    const showable = pipe.steps
+      .map((s) => s.agent)
+      .filter((a) => settled(a) && downstream(a).every(settled));
+    const allSettled = pipe.steps.every((s) => settled(s.agent));
+    if (allSettled) await this.toGate(task);
+    await this.sendPackageItems(
+      task,
+      showable.flatMap((a) => state.get(a)!.arts),
+    );
+  }
+
+  /** in_progress / revision -> in_review -> awaiting_final_approval (idempotent). */
+  private async toGate(task: TaskRow) {
+    const fresh = await this.task(task.id);
+    if (fresh.status === 'awaiting_final_approval') return;
+    if (fresh.status === 'in_progress' || fresh.status === 'revision')
+      await this.moveTo(task.id, 'in_review');
+    await this.moveTo(task.id, 'awaiting_final_approval');
+    await emitEvent(this.d.db, {
+      brandId: task.brandId,
+      agent: 'me',
+      taskId: task.id,
+      kind: 'waiting_owner',
+      text: `Пакет «${task.title}» ждёт вашего решения`,
+    });
+  }
+
+  /** Sends the owner the results not shown yet (each artifact exactly once). */
+  private async sendPackageItems(task: TaskRow, candidates: Artifact[]) {
     const decided = await finalDecisions(this.d.db, task.id);
+    const keyOf = (id: string) => `pkg-item:${task.id}:${id}`;
+    const fresh = candidates.filter((a) => !decided.has(a.id));
+    if (fresh.length === 0) return;
+    const keys = fresh.map((a) => keyOf(a.id));
+    const sentRows = await this.d.db
+      .select({ key: schema.idempotencyKeys.key })
+      .from(schema.idempotencyKeys)
+      .where(
+        sql`${schema.idempotencyKeys.key} in ${keys} and ${schema.idempotencyKeys.status} = 'completed'`,
+      );
+    const sent = new Set(sentRows.map((r) => r.key));
+    const unsent = fresh.filter((a) => !sent.has(keyOf(a.id)));
+    if (unsent.length === 0) return;
+    const [{ n: before } = { n: 0 }] = await this.d.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.idempotencyKeys)
+      .where(sql`${schema.idempotencyKeys.key} like ${`pkg-item:${task.id}:%`}`);
+    const all = await this.packageArtifacts(task.id);
     const pendingCount = all.filter((a) => decided.get(a.id)?.decision !== 'approved').length;
     const spend = await this.spend(task);
-    await this.once(`${run.id}:send-package`, () =>
-      this.d.channel.sendPackage({
-        taskId: task.id,
-        title: task.title,
-        items: created.map(toItemView),
-        pendingCount,
-        totalCount: all.length,
-        spentUsd: spend.spentUsd,
-        taskBudgetUsd: spend.limitUsd,
-        isUpdate,
-      }),
+    const ids = unsent.map((a) => a.id).sort();
+    const order = (await this.plan(task.id)).deliverables.map((d) => `copy:${d.id}`);
+    const copies = unsent
+      .filter((a) => a.slot.startsWith('copy:'))
+      .sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot));
+    await this.once(
+      `pkg:${task.id}:${createHash('sha256').update(ids.join(',')).digest('hex').slice(0, 24)}`,
+      () =>
+        this.d.channel.sendPackage({
+          taskId: task.id,
+          title: task.title,
+          items: copies.map(toItemView),
+          nodeItems: unsent.filter((a) => a.slot.startsWith('node:')).map(toNodeView),
+          pendingCount,
+          totalCount: all.length,
+          spentUsd: spend.spentUsd,
+          taskBudgetUsd: spend.limitUsd,
+          isUpdate: before > 0,
+        }),
     );
+    for (const a of unsent) await this.once(keyOf(a.id), () => Promise.resolve());
+  }
+
+  /** A graph step other than the copywriter (with an optional Critic review loop). */
+  private async nodeStep(
+    run: Run,
+    task: TaskRow,
+    ctx: AgentContext,
+    input: Extract<RunInput, { kind: 'node' }>,
+  ) {
+    const pipe = await this.pipelineOf(task.id);
+    const step = pipe.steps.find((s) => s.agent === input.agent);
+    if (!step) throw new PermanentError('step_missing', `Step ${input.agent} is not in the plan`);
+    const exec = this.d.executors?.[input.agent];
+    if (!exec)
+      throw new PermanentError('no_executor', `Агент ${step.name} пока не умеет выполнять шаги`);
+    const plan = await this.plan(task.id);
+    const base = input.rework ? await getArtifact(this.d.db, input.rework.baseArtifactId) : null;
+    const baseContent = base?.content as NodeContent | undefined;
+    let nodeInput: NodeInput = {
+      brief: briefText(task),
+      plan,
+      upstream: await this.upstreamOf(task.id, step),
+      previous: input.rework?.mode === 'revise' ? (baseContent?.output ?? null) : null,
+      ownerComment: input.rework?.ownerComment ?? null,
+      criticIssues: [],
+      mode: input.rework?.mode ?? 'first',
+      step: 'r0',
+    };
+    let artifact: Artifact | null = null;
+    for (let round = 0; round <= MAX_CRITIC_REVISIONS; round++) {
+      nodeInput = { ...nodeInput, step: `r${round}` };
+      const res = await this.invoke(input.agent, run, task, ctx, () => exec.run(ctx, nodeInput));
+      const review =
+        step.reviewed && exec.review
+          ? await this.invoke('critic', run, task, ctx, () =>
+              exec.review!(ctx, nodeInput, res.output),
+            )
+          : null;
+      const last = round === MAX_CRITIC_REVISIONS;
+      const verdict = review?.output ?? null;
+      artifact = await createArtifactVersion(this.d.db, `${run.id}:r${round}:${input.agent}`, {
+        brandId: task.brandId,
+        taskId: task.id,
+        runId: run.id,
+        slot: nodeSlot(input.agent),
+        kind: 'node',
+        content: {
+          agent: input.agent,
+          name: step.name,
+          output: res.output,
+          render: (() => {
+            try {
+              return exec.render(res.output);
+            } catch {
+              return renderGeneric(res.output, step.name);
+            }
+          })(),
+          inputSig: input.inputSig,
+          critic: verdict,
+          criticRound: round + 1,
+          criticRejected: !!verdict && !verdict.passed && last,
+          ownerComment: nodeInput.ownerComment,
+        } satisfies NodeContent,
+        agent: input.agent,
+        promptVersion: review ? `${res.promptVersion}+${review.promptVersion}` : res.promptVersion,
+        model: res.model,
+      });
+      if (verdict) {
+        await emitEvent(this.d.db, {
+          brandId: task.brandId,
+          agent: 'critic',
+          taskId: task.id,
+          runId: run.id,
+          kind: 'verdict',
+          text: `Critic · ${step.name}: ${verdict.passed ? 'принято' : 'доработать'}`,
+          costUsd: review!.costUsd,
+        });
+      }
+      if (!verdict || verdict.passed || last) break;
+      nodeInput = {
+        ...nodeInput,
+        previous: res.output,
+        criticIssues: verdict.issues,
+        mode: 'revise',
+      };
+    }
+    await this.advance(task.id, run);
+    return { artifact: artifact!.id };
   }
 
   private async completeIfAllApproved(taskId: string, actor: Actor): Promise<boolean> {
     const task = await this.task(taskId);
     if (task.status !== 'awaiting_final_approval') return false;
-    const all = await latestArtifacts(this.d.db, taskId, 'copy:');
+    const all = await this.packageArtifacts(taskId);
     const decided = await finalDecisions(this.d.db, taskId);
     if (all.length === 0 || !all.every((a) => decided.get(a.id)?.decision === 'approved'))
       return false;
@@ -621,6 +1012,21 @@ export class Workflow {
           choice: decided.get(a.id)?.choice ?? null,
         };
       });
+    const nodes: ExportNodeItem[] = (await this.nodeArtifacts(task.id))
+      .filter((a) => decided.get(a.id)?.decision === 'approved')
+      .map((a) => {
+        const c = a.content as NodeContent;
+        return {
+          artifactId: a.id,
+          version: a.version,
+          agent: c.agent,
+          agentName: c.name,
+          promptVersion: a.promptVersion,
+          model: a.model,
+          render: c.render,
+          output: c.output,
+        };
+      });
     const spend = await this.spend(task);
     const { result } = await withIdempotency(this.d.db, `${run.id}:write-package`, async () => {
       const r = await writePackage(
@@ -628,6 +1034,8 @@ export class Workflow {
         { id: task.id, title: task.title, brief: briefText(task) },
         items,
         spend.spentUsd,
+        new Date(),
+        nodes,
       );
       return { dir: r.dir };
     });
@@ -641,7 +1049,7 @@ export class Workflow {
           {
             name: 'package.md',
             content: Buffer.from(
-              renderPackageMarkdown(task.title, briefText(task), items, spend.spentUsd),
+              renderPackageMarkdown(task.title, briefText(task), items, spend.spentUsd, nodes),
               'utf8',
             ),
           },
@@ -649,7 +1057,15 @@ export class Workflow {
         spentUsd: spend.spentUsd,
       });
     });
-    return { dir: result.dir, items: items.length };
+    await emitEvent(this.d.db, {
+      brandId: task.brandId,
+      agent: 'me',
+      taskId: task.id,
+      runId: run.id,
+      kind: 'exported',
+      text: `Пакет экспортирован: ${items.length + nodes.length} результатов`,
+    });
+    return { dir: result.dir, items: items.length + nodes.length };
   }
 
   // ---------------------------------------------------------------- helpers
@@ -672,25 +1088,34 @@ export class Workflow {
     return run;
   }
 
-  /** Every agent call goes through the registry + invocation log. */
-  private invoke<T>(
+  /** Every agent call goes through the registry + invocation log (code and board agents). */
+  private async invoke<T>(
     agentId: string,
     run: Run,
     task: TaskRow,
     ctx: AgentContext,
     fn: () => Promise<AgentResult<T>>,
   ) {
-    const def = agentById(agentId);
-    if (!def) throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
+    const code = agentById(agentId);
+    const node = code
+      ? null
+      : (await loadWorkspace(this.d.db, task.brandId)).nodes.find((n) => n.id === agentId);
+    if (!code && !node)
+      throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
+    const role = (code?.modelRole ?? node?.modelRole ?? null) as
+      keyof AgentContext['models'] | null;
+    const prompt = (ctx.prompts as Record<string, LoadedPrompt | undefined>)[
+      code?.prompt ?? agentId
+    ];
     return invokeAgent(
       this.d.db,
-      def,
+      { id: agentId, name: code?.name ?? node!.name },
       {
         brandId: task.brandId,
         taskId: task.id,
         runId: run.id,
-        model: ctx.models[def.modelRole],
-        promptVersion: ctx.prompts[def.prompt].version,
+        model: role ? ctx.models[role] : 'tool',
+        promptVersion: prompt?.version ?? `${agentId}@code`,
       },
       fn,
     );
@@ -761,6 +1186,21 @@ export function toItemView(a: Artifact): PackageItemView {
     item: c.item,
     critic: c.critic,
     criticRound: c.criticRound,
+    criticRejected: c.criticRejected,
+    ownerComment: c.ownerComment,
+  };
+}
+
+export function toNodeView(a: Artifact): NodeItemView {
+  const c = a.content as NodeContent;
+  return {
+    artifactId: a.id,
+    version: a.version,
+    agent: c.agent,
+    agentName: c.name,
+    title: c.render.title,
+    lines: c.render.lines,
+    critic: c.critic,
     criticRejected: c.criticRejected,
     ownerComment: c.ownerComment,
   };

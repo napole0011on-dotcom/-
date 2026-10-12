@@ -2,6 +2,7 @@ import {
   CHECK_LABEL,
   CHECK_NAMES,
   PLATFORM_LABEL,
+  type NodeItemView,
   type PackageItemView,
   type PackageView,
   type PlanView,
@@ -51,10 +52,23 @@ export function renderPlan(v: PlanView): string[] {
       ),
     ].join('\n'),
     [
-      '<b>Кто и в каком порядке:</b>',
-      ...v.estimate.steps.map((s, i) => `${i + 1}. ${s.agent} — ${esc(s.what)}`),
+      '<b>Кто и в каком порядке</b> (по связям на доске):',
+      ...v.pipeline.steps.map(
+        (s, i) =>
+          `${i + 1}. ${esc(s.name)}${s.after.length ? ` — после: ${s.after.map((a) => esc(v.pipeline.steps.find((x) => x.agent === a)?.name ?? a)).join(', ')}` : ''}${s.reviewed ? ' · проверка Critic' : ''}`,
+      ),
+      `${v.pipeline.steps.length + 1}. Вы — согласование итогового пакета`,
     ].join('\n'),
   ];
+  if (v.pipeline.inactive.length)
+    blocks.push(
+      [
+        '<b>Связи, которые пока не работают:</b>',
+        ...v.pipeline.inactive.map((x) => `• ${esc(x.name)} — ${esc(x.reason)}`),
+      ].join('\n'),
+    );
+  if (p.unsupported?.length)
+    blocks.push(['<b>Некому сделать:</b>', ...p.unsupported.map((u) => `• ${esc(u)}`)].join('\n'));
   if (p.assumptions.length)
     blocks.push(['<b>Допущения:</b>', ...p.assumptions.map((a) => `• ${esc(a)}`)].join('\n'));
   if (p.questions.length)
@@ -120,5 +134,22 @@ export function renderItem(it: PackageItemView): string[] {
       ].join('\n'),
     );
   }
+  return splitMessage(blocks);
+}
+
+export function renderNodeItem(it: NodeItemView): string[] {
+  const verdict = !it.critic
+    ? ''
+    : it.critic.passed
+      ? '✅ Critic одобрил'
+      : it.criticRejected
+        ? '⚠️ <b>Critic НЕ одобрил</b> после 2 доработок'
+        : '⚠️ Critic: есть замечания';
+  const blocks = [
+    `<b>${esc(it.agentName)}</b> — ${esc(it.title)} (версия ${it.version})`,
+    ...(verdict ? [`${verdict}. ${esc(it.critic!.summary)}`] : []),
+    it.lines.map((l) => esc(l)).join('\n') || '—',
+  ];
+  if (it.ownerComment) blocks.push(`Ваш комментарий учтён: «${esc(it.ownerComment)}»`);
   return splitMessage(blocks);
 }

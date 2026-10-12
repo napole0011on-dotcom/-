@@ -11,13 +11,14 @@ export class MockLlmTransport implements LlmTransport {
 
   create(params: LlmRequest): Promise<LlmResponse> {
     this.calls++;
-    const title = (params.output_config?.format?.schema as { title?: string } | undefined)?.title;
+    const schema = schemaOf(params);
+    const title = schema?.title;
     const prompt = promptText(params);
     let body: unknown;
     if (title === 'CeoPlan') body = mockPlan(prompt);
     else if (title === 'CopywriterOutput') body = mockCopy(prompt);
     else if (title === 'CriticOutput') body = mockCritic(prompt);
-    else body = {};
+    else body = schema ? mockFromSchema(schema) : {};
     return Promise.resolve({
       id: `mock_${this.calls}`,
       type: 'message',
@@ -36,6 +37,103 @@ export class MockLlmTransport implements LlmTransport {
         iterations: null,
       },
     } as unknown as LlmResponse);
+  }
+}
+
+type JsonSchema = {
+  title?: string;
+  type?: string | string[];
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  items?: JsonSchema;
+  enum?: unknown[];
+  const?: unknown;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
+  minItems?: number;
+  maxItems?: number;
+  minimum?: number;
+  minLength?: number;
+  description?: string;
+  $ref?: string;
+  $defs?: Record<string, JsonSchema>;
+};
+
+/** The SDK moves constraints it cannot send into the description: "{minItems: 2}". */
+const fromDescription = (s: JsonSchema, k: 'minItems' | 'maxItems' | 'minLength' | 'minimum') => {
+  const m = new RegExp(`${k}:\\s*(-?\\d+)`).exec(s.description ?? '');
+  return m ? Number(m[1]) : undefined;
+};
+
+/** The output schema: structured outputs, or the JSON Schema line of the schema-in-prompt mode. */
+function schemaOf(params: LlmRequest): JsonSchema | undefined {
+  const s = params.output_config?.format?.schema as JsonSchema | undefined;
+  if (s) return s;
+  const system = Array.isArray(params.system)
+    ? params.system.map((b) => ('text' in b ? b.text : '')).join('\n')
+    : (params.system ?? '');
+  const m = /Формат ответа:[^\n]*\n[^\n]*\n(\{[\s\S]*\})\s*$/.exec(system);
+  if (!m) return undefined;
+  try {
+    return JSON.parse(m[1]!) as JsonSchema;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A plausible, schema-valid answer for any agent without its own mock (constructor agents,
+ * new code agents): strings marked [MOCK], numbers at the minimum, arrays at minItems (or 1).
+ * Semantic checks (refinements) are the agent's own business.
+ */
+export function mockFromSchema(
+  input: JsonSchema,
+  key = 'value',
+  depth = 0,
+  root: JsonSchema = input,
+): unknown {
+  if (depth > 12) return null;
+  const schema: JsonSchema = input.$ref
+    ? { ...(root.$defs?.[input.$ref.replace('#/$defs/', '')] ?? {}), ...input, $ref: undefined }
+    : input;
+  if (schema !== input) return mockFromSchema(schema, key, depth + 1, root);
+  const minItems = schema.minItems ?? fromDescription(schema, 'minItems');
+  const maxItems = schema.maxItems ?? fromDescription(schema, 'maxItems');
+  const minLength = schema.minLength ?? fromDescription(schema, 'minLength') ?? 0;
+  const minimum = schema.minimum ?? fromDescription(schema, 'minimum');
+  if (schema.const !== undefined) return schema.const;
+  if (schema.enum?.length) return schema.enum[0];
+  const variants = schema.anyOf ?? schema.oneOf;
+  if (variants?.length) {
+    const nonNull = variants.find((v) => v.type !== 'null') ?? variants[0]!;
+    return mockFromSchema(nonNull, key, depth + 1, root);
+  }
+  const type = Array.isArray(schema.type) ? schema.type.find((t) => t !== 'null') : schema.type;
+  switch (type) {
+    case 'object': {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(schema.properties ?? {}))
+        out[k] = mockFromSchema(v, k, depth + 1, root);
+      return out;
+    }
+    case 'array': {
+      const n = Math.max(minItems ?? 1, 1);
+      const len = maxItems !== undefined ? Math.min(n, maxItems) : n;
+      return Array.from({ length: len }, (_, i) =>
+        mockFromSchema(schema.items ?? { type: 'string' }, `${key} ${i + 1}`, depth + 1, root),
+      );
+    }
+    case 'number':
+    case 'integer':
+      return minimum ?? 1;
+    case 'boolean':
+      return true;
+    case 'null':
+      return null;
+    default: {
+      const text = `[MOCK] ${key}`;
+      return text.length >= minLength ? text : text.padEnd(minLength, '.');
+    }
   }
 }
 
@@ -79,6 +177,7 @@ function mockPlan(prompt: string): CeoPlan {
     assumptions: ['[MOCK] ответ сгенерирован без LLM (LLM_PROVIDER=mock)'],
     questions: [],
     deliverables,
+    unsupported: [],
   };
 }
 

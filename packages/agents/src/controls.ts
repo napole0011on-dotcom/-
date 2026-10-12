@@ -42,13 +42,18 @@ const DEFAULT_AGENT: AgentControlState = {
 };
 
 /** Agents a run will call, by run kind. A run waits while any of them is paused or disabled. */
-export function agentsForRun(run: Pick<Run, 'input'>): AgentName[] {
+export function agentsForRun(run: Pick<Run, 'input'>): string[] {
   switch ((run.input as { kind?: string } | null)?.kind) {
     case 'plan':
       return ['ceo'];
     case 'copy':
     case 'rework':
       return ['copywriter', 'critic'];
+    case 'node': {
+      // A board step; when the Critic reviews it, it waits for the Critic as well.
+      const i = run.input as { agent: string; reviewed?: boolean };
+      return i.reviewed ? [i.agent, 'critic'] : [i.agent];
+    }
     default:
       return []; // export: no agent involved
   }

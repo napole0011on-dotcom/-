@@ -2,7 +2,7 @@ import { InlineKeyboard, InputFile, type Api } from 'grammy';
 import type { ExportView, OwnerChannel, PackageView, PlanView } from '@cms/agents';
 import type { NotifierMessage } from '@cms/providers';
 import { cb } from '@cms/agents';
-import { esc, renderItem, renderPackageHeader, renderPlan } from './format.js';
+import { esc, renderItem, renderNodeItem, renderPackageHeader, renderPlan } from './format.js';
 
 /** Sends everything to the single owner chat. */
 export class TelegramChannel implements OwnerChannel {
@@ -62,6 +62,14 @@ export class TelegramChannel implements OwnerChannel {
         .text('✏️ Правка с комментарием', cb.item('ed', it.artifactId))
         .text('🔄 Заново', cb.item('re', it.artifactId));
       await this.sendHtml(renderItem(it), kb);
+    }
+    for (const it of v.nodeItems) {
+      const kb = new InlineKeyboard()
+        .text('✅ Утвердить', cb.item('ok', it.artifactId))
+        .row()
+        .text('✏️ Правка с комментарием', cb.item('ed', it.artifactId))
+        .text('🔄 Заново', cb.item('re', it.artifactId));
+      await this.sendHtml(renderNodeItem(it), kb);
     }
     // Whole-package actions, same as in the web panel.
     const kb = new InlineKeyboard();

@@ -131,7 +131,13 @@ describe('prompts and brand profile', () => {
       notes: '',
     };
     const e = estimatePlan(
-      { summary: 's', assumptions: [], questions: [], deliverables: [d, { ...d, id: 'q' }] },
+      {
+        summary: 's',
+        assumptions: [],
+        questions: [],
+        deliverables: [d, { ...d, id: 'q' }],
+        unsupported: [],
+      },
       pricing,
       {
         ceo: 'claude-opus-5-5',

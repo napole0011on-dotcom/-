@@ -9,6 +9,19 @@ import {
   type Deliverable,
 } from './schemas.js';
 import type { Verdict } from './agents/critic.js';
+import type { NodeRender } from './nodes.js';
+
+/** An approved result of another graph step (SEO, Image, KP, ...). */
+export interface ExportNodeItem {
+  artifactId: string;
+  version: number;
+  agent: string;
+  agentName: string;
+  promptVersion: string;
+  model: string | null;
+  render: NodeRender;
+  output: unknown;
+}
 
 export interface ExportItem {
   artifactId: string;
@@ -28,6 +41,7 @@ export function renderPackageMarkdown(
   brief: string,
   items: ExportItem[],
   spentUsd: number,
+  nodes: ExportNodeItem[] = [],
 ): string {
   const out: string[] = [
     `# ${title}`,
@@ -86,6 +100,16 @@ export function renderPackageMarkdown(
       '',
     );
   }
+  for (const n of nodes) {
+    out.push(
+      `## ${n.agentName}: ${n.render.title}`,
+      '',
+      ...n.render.lines.map((l) => `- ${l}`),
+      '',
+      `Версия ${n.version}, промпт ${n.promptVersion}, модель ${n.model ?? '—'}`,
+      '',
+    );
+  }
   return out.join('\n');
 }
 
@@ -96,18 +120,22 @@ export async function writePackage(
   items: ExportItem[],
   spentUsd: number,
   now = new Date(),
+  nodes: ExportNodeItem[] = [],
 ): Promise<{ dir: string; files: { name: string; content: Buffer }[] }> {
   const dir = path.join(exportDir, `${now.toISOString().slice(0, 10)}_${task.id.slice(0, 8)}`);
   await mkdir(dir, { recursive: true });
   const files = [
     {
       name: 'package.md',
-      content: Buffer.from(renderPackageMarkdown(task.title, task.brief, items, spentUsd), 'utf8'),
+      content: Buffer.from(
+        renderPackageMarkdown(task.title, task.brief, items, spentUsd, nodes),
+        'utf8',
+      ),
     },
     {
       name: 'package.json',
       content: Buffer.from(
-        JSON.stringify({ task, spentUsd, exportedAt: now.toISOString(), items }, null, 2),
+        JSON.stringify({ task, spentUsd, exportedAt: now.toISOString(), items, nodes }, null, 2),
         'utf8',
       ),
     },

@@ -4,6 +4,8 @@ import { json, type AgentContext, type AgentResult } from './context.js';
 
 export interface CeoInput {
   brief: string;
+  /** Active agents of the board that will run after the plan (the plan may only use them). */
+  team?: { name: string; role: string }[];
   previousPlan?: CeoPlan;
   ownerComment?: string;
 }
@@ -12,6 +14,16 @@ export interface CeoInput {
 export async function runCeo(ctx: AgentContext, input: CeoInput): Promise<AgentResult<CeoPlan>> {
   const prompt = ctx.prompts.ceo;
   const parts = [`Бриф владельца:\n${input.brief}`];
+  if (input.team?.length) {
+    parts.push(
+      [
+        'Команда после плана (связи на доске владельца, только активные агенты):',
+        ...input.team.map((t) => `- ${t.name}${t.role ? `: ${t.role}` : ''}`),
+        'Планируй только работу, которую могут сделать эти агенты. Если часть брифа сделать некому, ' +
+          'перечисли её в unsupported в виде «нет агента для …» и не придумывай шаг.',
+      ].join('\n'),
+    );
+  }
   if (input.previousPlan) parts.push(`Прошлый план:\n${json(input.previousPlan)}`);
   if (input.ownerComment)
     parts.push(`Комментарий владельца к прошлому плану (учти обязательно):\n${input.ownerComment}`);

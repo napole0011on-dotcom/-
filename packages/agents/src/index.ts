@@ -17,3 +17,7 @@ export * from './telegram-callbacks.js';
 export * from './controls.js';
 export * from './prompt-store.js';
 export * from './agent-test.js';
+export * from './graph.js';
+export * from './workspace.js';
+export * from './events.js';
+export * from './nodes.js';

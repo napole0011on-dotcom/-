@@ -1,7 +1,7 @@
 import { errorToJson } from '@cms/core';
 import { schema, sql, type DbOrTx } from '@cms/db';
 import type { AgentResult } from './agents/context.js';
-import type { AgentDefinition } from './registry.js';
+import { emitEvent } from './events.js';
 
 const { agentInvocations } = schema;
 
@@ -20,7 +20,7 @@ export interface InvocationTarget {
  */
 export async function invokeAgent<T>(
   db: DbOrTx,
-  def: AgentDefinition,
+  def: { id: string; name: string },
   target: InvocationTarget,
   fn: () => Promise<AgentResult<T>>,
 ): Promise<AgentResult<T>> {
@@ -36,6 +36,8 @@ export async function invokeAgent<T>(
       model: target.model,
     })
     .returning({ id: agentInvocations.id });
+  const ev = { brandId: target.brandId, agent: def.id, taskId: target.taskId, runId: target.runId };
+  await emitEvent(db, { ...ev, kind: 'started', text: `${def.name} · начал работу` });
   try {
     const result = await fn();
     await db
@@ -48,6 +50,12 @@ export async function invokeAgent<T>(
         finishedAt: sql`now()`,
       })
       .where(sql`${agentInvocations.id} = ${row!.id}`);
+    await emitEvent(db, {
+      ...ev,
+      kind: 'finished',
+      text: `${def.name} · готово`,
+      costUsd: result.costUsd,
+    });
     return result;
   } catch (err) {
     await db
@@ -59,6 +67,11 @@ export async function invokeAgent<T>(
         finishedAt: sql`now()`,
       })
       .where(sql`${agentInvocations.id} = ${row!.id}`);
+    await emitEvent(db, {
+      ...ev,
+      kind: 'failed',
+      text: `${def.name} · ошибка: ${(err instanceof Error ? err.message : 'неизвестная ошибка').slice(0, 120)}`,
+    });
     throw err;
   }
 }
