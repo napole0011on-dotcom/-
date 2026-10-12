@@ -91,7 +91,12 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
       status: 'active',
     });
     const testDeps = { db: t.db, config, controls: wf.controls, logger: silentLogger };
-    expect(await installPresets(testDeps, brand.id)).toEqual(['seo']);
+    expect(await installPresets(testDeps, brand.id)).toEqual([
+      'seo',
+      'reels',
+      'video_summary',
+      'mailer_draft',
+    ]);
     expect(await installPresets(testDeps, brand.id)).toEqual([]); // once
     const seo = await resolveAgent(t.db, brand.id, 'seo');
     expect(seo).toMatchObject({ status: 'active', kind: 'constructor' });

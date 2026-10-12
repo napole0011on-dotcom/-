@@ -18,6 +18,8 @@ import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
 import { RecordingChannel } from './testing.js';
 import { Workflow } from './workflow.js';
+import { installPresets } from './presets.js';
+import { addLink } from './workspace.js';
 
 const OWNER = { kind: 'human', id: 'panel:owner' } as const;
 
@@ -97,7 +99,7 @@ describe('voice/video -> text (mock STT, real ffmpeg)', () => {
           .from(schema.transcripts)
           .where(sql`${schema.transcripts.id} = ${id}`)
       )[0]!;
-    return { brand, channel, wf, drain, stt, storage, transcript };
+    return { brand, channel, wf, drain, stt, storage, transcript, config };
   }
 
   it('voice: chunks, segments with timecodes, txt/srt/vtt/json, Telegram reply, task from it', async () => {
@@ -163,6 +165,68 @@ describe('voice/video -> text (mock STT, real ffmpeg)', () => {
     expect(body.lastIndexOf('<external_data', at)).toBeGreaterThan(-1);
     expect(body.indexOf('</external_data>', at)).toBeGreaterThan(at);
     expect(s.channel.plans).toHaveLength(1); // the plan arrived as usual
+  });
+
+  it('video -> transcript -> «Видео: кратко» -> Reels: links from the source tool drive the plan', async () => {
+    const s = await setup();
+    const deps = { db: t.db, config: s.config, controls: s.wf.controls, logger: silentLogger };
+    expect(await installPresets(deps, s.brand.id)).toContain('video_summary');
+    for (const [a, b] of [
+      ['video_transcribe', 'video_summary'],
+      ['video_summary', 'reels'],
+    ] as const)
+      expect((await addLink(t.db, s.brand.id, a, b, OWNER)).ok).toBe(true);
+    // Only the allowed targets: a transcript cannot go straight to Image.
+    expect((await addLink(t.db, s.brand.id, 'video_transcribe', 'image', OWNER)).ok).toBe(false);
+    expect((await addLink(t.db, s.brand.id, 'mailer_send', 'critic', OWNER)).ok).toBe(false);
+
+    const out = path.join(dir, 'clip.mp4');
+    execFileSync('ffmpeg', [
+      '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=10:duration=7',
+      '-f', 'lavfi', '-i', 'sine=frequency=300:duration=7', '-shortest',
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', out,
+    ]); // prettier-ignore
+    const up = await s.wf.transcribeUpload(
+      s.brand.id,
+      {
+        kind: 'video',
+        source: 'panel',
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        data: readFileSync(out),
+      },
+      OWNER,
+    );
+    expect(up.ok, up.message).toBe(true);
+    await s.drain();
+    const tr = await s.transcript(up.transcriptId!);
+    expect(tr.status).toBe('done');
+    expect(Number(tr.durationSec)).toBeGreaterThan(6);
+
+    const made = await s.wf.createTaskFromTranscript(tr.id, OWNER);
+    await s.drain();
+    const plan = s.channel.plans.at(-1)!;
+    const steps = plan.pipeline.steps.map((x) => [x.agent, x.after, x.inputs ?? []]);
+    expect(steps).toEqual(
+      expect.arrayContaining([
+        ['video_summary', [], ['video_transcribe']],
+        ['reels', ['video_summary'], []],
+      ]),
+    );
+    await s.wf.decidePlan(made.taskId!, 'approve', OWNER);
+    await s.drain();
+    const pkg = s.channel.packages.at(-1)!;
+    expect(pkg.nodeItems.map((n) => n.agent)).toEqual(
+      expect.arrayContaining(['video_summary', 'reels']),
+    );
+    // The summary agent got the transcript as external data.
+    const [call] = await t.db
+      .select({ req: schema.llmCalls.request })
+      .from(schema.llmCalls)
+      .where(
+        sql`${schema.llmCalls.taskId} = ${made.taskId!} and ${schema.llmCalls.agent} = 'video_summary'`,
+      );
+    expect(JSON.stringify(call!.req)).toMatch(/external_data[^>]*step:video_transcribe/);
   });
 
   it('limits: too long is refused with a clear message; wrong format; cancel keeps the done part', async () => {
