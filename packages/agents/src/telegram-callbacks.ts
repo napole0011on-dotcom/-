@@ -11,7 +11,8 @@ export type Callback =
       action: 'approve_all' | 'cancel' | 'reject_ask' | 'reject' | 'reopen';
       taskId: string;
     }
-  | { type: 'budget'; extraUsd: number; taskId: string };
+  | { type: 'budget'; extraUsd: number; taskId: string }
+  | { type: 'transcript'; action: 'task' | 'keep'; transcriptId: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -22,6 +23,8 @@ export const cb = {
   /** rj = ask to confirm rejection, ry = rejection confirmed, ro = reopen (undo rejection). */
   task: (action: 'all' | 'no' | 'rj' | 'ry' | 'ro', taskId: string) => `t:${action}:${taskId}`,
   budget: (extraUsd: 1 | 5, taskId: string) => `b:${extraUsd}:${taskId}`,
+  /** tk = create a task from the transcript, kp = keep it in «Расшифровки» only. */
+  transcript: (action: 'tk' | 'kp', transcriptId: string) => `r:${action}:${transcriptId}`,
 };
 
 export function parseCallback(data: string): Callback | null {
@@ -49,6 +52,12 @@ export function parseCallback(data: string): Callback | null {
     if (action === 'ro') return { type: 'task', action: 'reopen', taskId: id };
     return null;
   }
+  if (kind === 'r' && (action === 'tk' || action === 'kp'))
+    return {
+      type: 'transcript',
+      action: action === 'tk' ? 'task' : 'keep',
+      transcriptId: id,
+    };
   if (kind === 'b' && (action === '1' || action === '5'))
     return { type: 'budget', extraUsd: Number(action), taskId: id };
   return null;

@@ -10,7 +10,15 @@ import {
   type TaskStatus,
 } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import type { ObjectStorage } from '@cms/providers';
+import type { ObjectStorage, SttProvider } from '@cms/providers';
+import { cb } from './telegram-callbacks.js';
+import {
+  MEDIA_TOOL,
+  ingestMedia,
+  runTranscription,
+  startTranscription,
+  type MediaKind,
+} from './tools/media.js';
 import {
   approveBudgetOverride,
   budgetStatus,
@@ -95,7 +103,17 @@ export type RunInput =
       ownerComment: string | null;
       mode: 'revise' | 'regenerate';
     }
-  | { kind: 'export' };
+  | { kind: 'export' }
+  /** Tool step: voice/video -> text (service task kind "media"). */
+  | { kind: 'transcribe'; transcriptId: string };
+
+/** Files the owner attached to a brief (transcripts of voice messages and videos). */
+export interface TaskAttachment {
+  kind: 'transcript';
+  id: string;
+  media: MediaKind;
+  name: string;
+}
 
 export interface CopyContent extends Record<string, unknown> {
   deliverable: Deliverable;
@@ -120,6 +138,8 @@ export interface WorkflowDeps {
   executors?: Record<string, NodeExecutor>;
   /** Object storage with files of steps (images); copied into the export folder. */
   storage?: ObjectStorage;
+  /** Speech recognition for voice/video tool steps. */
+  stt?: SttProvider;
 }
 
 export interface DecisionResult {
@@ -153,7 +173,12 @@ export class Workflow {
 
   // ---------------------------------------------------------------- owner actions
 
-  async submitBrief(brandId: string, text: string, actor: Actor): Promise<{ taskId: string }> {
+  async submitBrief(
+    brandId: string,
+    text: string,
+    actor: Actor,
+    opts: { attachments?: TaskAttachment[] } = {},
+  ): Promise<{ taskId: string }> {
     const brief = text.trim();
     if (brief.length < 10)
       throw new PermanentError(
@@ -165,7 +190,9 @@ export class Workflow {
       brandId,
       kind: 'content',
       title,
-      brief: { text: brief },
+      brief: opts.attachments?.length
+        ? { text: brief, attachments: opts.attachments }
+        : { text: brief },
       budgetUsd: this.d.config.budget.taskUsd,
       actor,
     });
@@ -446,13 +473,157 @@ export class Workflow {
         return this.nodeStep(run, task, ctx, input);
       case 'export':
         return this.exportStep(run, task);
+      case 'transcribe':
+        return this.transcribeStep(run, rc.signal);
     }
   };
+
+  /** Voice/video -> text; the owner gets the text in Telegram when it came from there. */
+  private async transcribeStep(run: Run, signal: AbortSignal) {
+    if (!this.d.storage || !this.d.stt)
+      throw new PermanentError('stt_not_configured', 'Расшифровка не настроена в этом процессе');
+    const t = await runTranscription(
+      {
+        db: this.d.db,
+        storage: this.d.storage,
+        stt: this.d.stt,
+        config: this.d.config,
+        budget: this.budget,
+        logger: this.d.logger,
+      },
+      run,
+      signal,
+    );
+    if (t.notifyChatId && t.status === 'done') {
+      const text = t.text.length > 3500 ? `${t.text.slice(0, 3500)}…` : t.text;
+      await this.once(`${run.id}:notify-transcript`, () =>
+        this.d.channel
+          .send({
+            text: `🎙 Расшифровка (${Math.round(Number(t.durationSec ?? 0))} с):\n\n${text || '— тишина, текста нет —'}\n\nПолный текст и субтитры — в панели, «Расшифровки».`,
+            buttons: [
+              [
+                { text: '📝 Сделать задачу', data: cb.transcript('tk', t.id) },
+                { text: 'Оставить в расшифровках', data: cb.transcript('kp', t.id) },
+              ],
+            ],
+          })
+          .then(() => undefined),
+      );
+    }
+    return { transcriptId: t.id, status: t.status };
+  }
+
+  /**
+   * "Сделать задачу" / "Передать в Reels": a content task whose brief carries the transcript as an
+   * attachment. The transcript is external data for every agent (never instructions).
+   */
+  async createTaskFromTranscript(
+    transcriptId: string,
+    actor: Actor,
+    text?: string | null,
+  ): Promise<DecisionResult & { taskId?: string }> {
+    const [t] = await this.d.db
+      .select({ tr: schema.transcripts, file: schema.mediaFiles })
+      .from(schema.transcripts)
+      .innerJoin(schema.mediaFiles, sql`${schema.mediaFiles.id} = ${schema.transcripts.fileId}`)
+      .where(sql`${schema.transcripts.id} = ${transcriptId}`);
+    if (!t) return { ok: false, message: 'Расшифровка не найдена' };
+    if (t.tr.status !== 'done') return { ok: false, message: 'Расшифровка ещё не готова' };
+    const media = t.file.kind as MediaKind;
+    const brief =
+      text?.trim() ||
+      (media === 'voice'
+        ? 'Задача из голосового сообщения: что нужно сделать — в расшифровке во вложении.'
+        : 'Контент по видео: используй расшифровку во вложении (краткое содержание, идеи для Reels).');
+    const { taskId } = await this.submitBrief(t.tr.brandId, brief, actor, {
+      attachments: [{ kind: 'transcript', id: t.tr.id, media, name: t.file.originalName }],
+    });
+    return { ok: true, message: 'Задача создана, CEO готовит план', taskId };
+  }
+
+  /** Telegram voice / panel upload: store the file (limits checked) and queue the transcription. */
+  async transcribeUpload(
+    brandId: string,
+    file: {
+      kind: MediaKind;
+      source: 'telegram' | 'panel';
+      name: string;
+      mimeType: string;
+      data: Buffer;
+    },
+    actor: Actor,
+    notifyChatId?: string | null,
+  ): Promise<DecisionResult & { transcriptId?: string }> {
+    if (!this.d.storage) return { ok: false, message: 'Хранилище не подключено' };
+    const r = await ingestMedia(
+      { db: this.d.db, storage: this.d.storage, config: this.d.config },
+      brandId,
+      file,
+      actor,
+    );
+    if (!r.ok) return r;
+    const { transcriptId } = await startTranscription(
+      { db: this.d.db, config: this.d.config, enqueue: this.d.enqueue },
+      brandId,
+      r.fileId!,
+      { notifyChatId: notifyChatId ?? null, actor },
+    );
+    return {
+      ok: true,
+      transcriptId,
+      message:
+        file.kind === 'voice'
+          ? 'Голосовое получено, расшифровываю…'
+          : 'Видео загружено, расшифровка идёт в фоне — прогресс в «Расшифровках»',
+    };
+  }
+
+  /** "Отменить" a running transcription: it stops after the current chunk, the done part stays. */
+  async cancelTranscript(transcriptId: string, actor: Actor): Promise<DecisionResult> {
+    const rows = await this.d.db
+      .update(schema.transcripts)
+      .set({ status: 'cancelled', updatedAt: sql`now()` })
+      .where(
+        sql`${schema.transcripts.id} = ${transcriptId} and ${schema.transcripts.status} in ('queued', 'running')`,
+      )
+      .returning({ brandId: schema.transcripts.brandId });
+    if (!rows.length) return { ok: false, message: 'Расшифровка уже завершена' };
+    await this.d.db.insert(schema.auditLog).values({
+      brandId: rows[0]!.brandId,
+      actorKind: actor.kind,
+      actorId: actor.id,
+      action: 'transcript_cancelled',
+      details: { transcriptId },
+    });
+    return { ok: true, message: 'Расшифровка остановлена, готовая часть сохранена' };
+  }
+
+  private attachmentsOf(task: TaskRow): TaskAttachment[] {
+    const a = (task.brief as { attachments?: TaskAttachment[] }).attachments;
+    return Array.isArray(a) ? a : [];
+  }
+
+  /** Transcript texts of the attachments (bounded), for prompts. */
+  private async attachmentTexts(task: TaskRow, which?: (a: TaskAttachment) => boolean) {
+    const out: { name: string; media: MediaKind; text: string }[] = [];
+    for (const a of this.attachmentsOf(task).filter(which ?? (() => true))) {
+      const [t] = await this.d.db
+        .select({ text: schema.transcripts.text })
+        .from(schema.transcripts)
+        .where(
+          sql`${schema.transcripts.id} = ${a.id} and ${schema.transcripts.brandId} = ${task.brandId}`,
+        );
+      if (t) out.push({ name: a.name, media: a.media, text: t.text.slice(0, 20000) });
+    }
+    return out;
+  }
 
   private async planStep(run: Run, task: TaskRow, ctx: AgentContext, ownerComment: string | null) {
     const previous = await latestArtifact(this.d.db, task.id, 'plan');
     // The plan carries a snapshot of the board: approving the plan freezes the steps for this task.
-    const pipeline = await currentPipeline(this.d.db, task.brandId);
+    const sources = [...new Set(this.attachmentsOf(task).map((a) => MEDIA_TOOL[a.media]))];
+    const pipeline = await currentPipeline(this.d.db, task.brandId, sources);
+    const attachments = await this.attachmentTexts(task);
     const ws = await loadWorkspace(this.d.db, task.brandId);
     const team = pipeline.steps.map((s) => {
       const n = ws.nodes.find((x) => x.id === s.agent);
@@ -462,6 +633,7 @@ export class Workflow {
       runCeo(ctx, {
         brief: briefText(task),
         team,
+        ...(attachments.length ? { attachments } : {}),
         ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
         ...(ownerComment ? { ownerComment } : {}),
       }),
@@ -705,6 +877,23 @@ export class Workflow {
   /** Results of the steps this step waits for, as data for its prompt. */
   private async upstreamOf(taskId: string, step: PipelineStep): Promise<UpstreamResult[]> {
     const out: UpstreamResult[] = [];
+    // Attachments: to the steps linked from their source tool; without such links — to the
+    // first steps (the ones that start right after the plan).
+    const task = await this.task(taskId);
+    if (this.attachmentsOf(task).length) {
+      const pipe = await this.pipelineOf(taskId);
+      const consumed = new Set(pipe.steps.flatMap((x) => x.inputs ?? []));
+      const texts = await this.attachmentTexts(task, (a) => {
+        const src = MEDIA_TOOL[a.media];
+        return consumed.has(src) ? (step.inputs ?? []).includes(src) : step.after.length === 0;
+      });
+      for (const t of texts)
+        out.push({
+          agent: MEDIA_TOOL[t.media],
+          name: t.media === 'voice' ? 'Расшифровка голосового' : 'Расшифровка видео',
+          items: [{ file: t.name, text: t.text }],
+        });
+    }
     for (const dep of step.after) {
       const arts = await this.stepArtifacts(taskId, dep);
       if (dep === COPYWRITER) {

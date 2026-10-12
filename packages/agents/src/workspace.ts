@@ -16,6 +16,7 @@ import {
   type Pipeline,
 } from './graph.js';
 import { AGENTS } from './registry.js';
+import { TOOLS } from './tools/registry.js';
 
 const { agentDefinitions, agentLinks, agentLayout, auditLog } = schema;
 
@@ -90,6 +91,17 @@ function seedNodes(): Seed[] {
       modelRole: 'worker',
     },
     code('image', 'pink', 'И'),
+    ...TOOLS.map((t): Seed => ({
+      id: t.id,
+      name: t.name,
+      role: t.role,
+      description: t.description,
+      kind: 'tool',
+      status: 'active',
+      color: t.color,
+      icon: t.icon,
+      modelRole: null,
+    })),
     {
       id: OWNER,
       name: 'Вы',
@@ -117,7 +129,7 @@ export async function ensureWorkspace(db: Db, brandId: string): Promise<void> {
       .where(sql`${agentDefinitions.brandId} = ${brandId}`);
     // Seeded once: an agent the owner deleted (e.g. a constructor draft) does not come back.
     // Code agents and the two human nodes are always present.
-    const always = new Set([BRIEF, OWNER, ...AGENTS.map((a) => a.id)]);
+    const always = new Set([BRIEF, OWNER, ...AGENTS.map((a) => a.id), ...TOOLS.map((t) => t.id)]);
     await tx
       .insert(agentDefinitions)
       .values(
@@ -162,6 +174,22 @@ export async function ensureWorkspace(db: Db, brandId: string): Promise<void> {
       .select({ n: sql<number>`count(*)::int` })
       .from(agentLayout)
       .where(sql`${agentLayout.brandId} = ${brandId}`);
+    if (n > 0) {
+      // Nodes added by a newer version (tools, code agents) get a free spot on an existing board.
+      const placed = new Set(
+        (
+          await tx
+            .select({ id: agentLayout.nodeId })
+            .from(agentLayout)
+            .where(sql`${agentLayout.brandId} = ${brandId}`)
+        ).map((r) => r.id),
+      );
+      const present = await tx
+        .select({ id: agentDefinitions.id })
+        .from(agentDefinitions)
+        .where(sql`${agentDefinitions.brandId} = ${brandId}`);
+      for (const { id } of present) if (!placed.has(id)) await placeNewNode(tx, brandId, id);
+    }
     if (n === 0) {
       const pos = autoLayout(
         seeds,
@@ -235,9 +263,13 @@ export async function loadWorkspace(db: Db, brandId: string): Promise<Workspace>
 }
 
 /** Execution plan for a new task from the current board. */
-export async function currentPipeline(db: Db, brandId: string): Promise<Pipeline> {
+export async function currentPipeline(
+  db: Db,
+  brandId: string,
+  sources: readonly string[] = [],
+): Promise<Pipeline> {
   const w = await loadWorkspace(db, brandId);
-  return buildPipeline(w.nodes, w.links);
+  return buildPipeline(w.nodes, w.links, sources);
 }
 
 const audit = (

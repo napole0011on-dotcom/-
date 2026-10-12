@@ -222,6 +222,10 @@ describe('board links drive execution (Postgres)', () => {
       'critic',
       'seo',
       'image',
+      'stt_voice',
+      'video_transcribe',
+      'kp_render',
+      'mailer_send',
       'me',
     ]);
     const sys = ws.links.find((l) => l.from === 'ceo' && l.to === 'copywriter')!;

@@ -37,6 +37,8 @@ function harness() {
     listTasks: () => Promise.resolve('tasks'),
     findTask: () => Promise.resolve(null),
     reconcile: (text: string) => (done.push(`reconcile:${text}`), Promise.resolve('ok')),
+    transcribeVoice: (file) => (done.push(`voice:${file.name}`), ok('Голосовое получено')),
+    transcriptToTask: (id) => (done.push(`tr-task:${id}`), ok('Задача создана')),
   };
   const bot = createBot('123:TEST', OWNER, actions, logger);
   bot.botInfo = {
@@ -58,7 +60,9 @@ function harness() {
       result:
         method === 'sendMessage'
           ? { message_id: calls.length, date: 0, chat: { id: OWNER, type: 'private' } }
-          : true,
+          : method === 'getFile'
+            ? { file_id: 'f', file_unique_id: 'u1', file_path: 'voice/file_1.oga' }
+            : true,
     } as never);
   });
   let updateId = 1;
@@ -95,7 +99,24 @@ function harness() {
         },
       },
     });
-  return { calls, done, text, press };
+  const voice = (from: number, size: number) =>
+    bot.handleUpdate({
+      update_id: updateId++,
+      message: {
+        message_id: updateId,
+        date: 0,
+        chat: { id: from, type: 'private', first_name: 'u' },
+        from: { id: from, is_bot: false, first_name: 'u' },
+        voice: {
+          file_id: 'f',
+          file_unique_id: 'u1',
+          duration: 3,
+          file_size: size,
+          mime_type: 'audio/ogg',
+        },
+      },
+    });
+  return { calls, done, text, press, voice };
 }
 
 describe('bot', () => {
@@ -186,6 +207,25 @@ describe('bot', () => {
 });
 
 describe('callbacks and formatting', () => {
+  it('voice: downloads the file and queues the transcription; too big is refused; button makes a task', async () => {
+    const h = harness();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = () => Promise.resolve(new Response(new Uint8Array([1, 2, 3])));
+    try {
+      await h.voice(OWNER, 1000);
+      expect(h.done).toContain('voice:voice-u1.oga');
+      await h.voice(OWNER, 30 * 1024 * 1024);
+      expect(h.done.filter((d) => d.startsWith('voice:'))).toHaveLength(1);
+      expect(JSON.stringify(h.calls.at(-1)!.payload)).toMatch(/больше 20 МБ/);
+      await h.voice(222, 1000);
+      expect(h.done.filter((d) => d.startsWith('voice:'))).toHaveLength(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    await h.press(OWNER, cb.transcript('tk', UUID));
+    expect(h.done).toContain(`tr-task:${UUID}`);
+  });
+
   it('every payload fits the 64-byte Telegram limit and round-trips', () => {
     const all = [
       cb.plan('ok', UUID),
@@ -203,6 +243,8 @@ describe('callbacks and formatting', () => {
       cb.task('no', UUID),
       cb.budget(1, UUID),
       cb.budget(5, UUID),
+      cb.transcript('tk', UUID),
+      cb.transcript('kp', UUID),
     ];
     for (const d of all) {
       expect(Buffer.byteLength(d, 'utf8'), d).toBeLessThanOrEqual(64);

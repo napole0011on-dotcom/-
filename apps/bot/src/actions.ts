@@ -40,6 +40,14 @@ export function makeActions(deps: {
     rejectPackage: (id, actor) => workflow.rejectPackage(id, actor),
     reopenPackage: (id, actor) => workflow.reopenPackage(id, actor),
     approveBudget: (id, usd, actor) => workflow.approveBudget(id, usd, actor),
+    transcribeVoice: (file, chatId, actor) =>
+      workflow.transcribeUpload(
+        deps.brandId(),
+        { kind: 'voice', source: 'telegram', ...file },
+        actor,
+        String(chatId),
+      ),
+    transcriptToTask: (id, actor) => workflow.createTaskFromTranscript(id, actor),
 
     async brandInfo() {
       const b = await getBrand(db, deps.brandId());

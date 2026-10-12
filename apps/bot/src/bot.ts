@@ -31,6 +31,13 @@ export interface BotActions {
   listTasks(): Promise<string>;
   findTask(idPrefix: string): Promise<string | null>;
   reconcile(balanceText: string, actor: Actor): Promise<string>;
+  /** Voice message -> stored file + transcription in the queue (reply comes when it is done). */
+  transcribeVoice(
+    file: { name: string; mimeType: string; data: Buffer },
+    chatId: number,
+    actor: Actor,
+  ): Promise<DecisionResult>;
+  transcriptToTask(transcriptId: string, actor: Actor): Promise<DecisionResult>;
 }
 
 type Pending = { kind: 'plan_change'; taskId: string } | { kind: 'revise'; artifactId: string };
@@ -145,6 +152,11 @@ export function createBot(
               : c.action === 'reopen'
                 ? await actions.reopenPackage(c.taskId, actor)
                 : await actions.cancelTask(c.taskId, actor);
+      } else if (c.type === 'transcript') {
+        result =
+          c.action === 'task'
+            ? await actions.transcriptToTask(c.transcriptId, actor)
+            : { ok: true, message: 'Оставил в «Расшифровках» панели' };
       } else result = await actions.approveBudget(c.taskId, c.extraUsd, actor);
     } catch (err) {
       logger.error({ err }, 'callback failed');
@@ -164,6 +176,31 @@ export function createBot(
       } else {
         await ctx.reply(`➡️ ${result.message}`);
       }
+    }
+  });
+
+  // Voice messages and audio files -> text. Bot API lets a bot download files up to 20 MB
+  // (TODO(verify) against core.telegram.org/bots/api#getfile; VOICE_MAX_MB is checked too).
+  bot.on(['message:voice', 'message:audio'], async (ctx) => {
+    const m = ctx.message.voice ?? ctx.message.audio;
+    if ((m.file_size ?? 0) > 20 * 1024 * 1024)
+      return ctx.reply('Файл больше 20 МБ — бот не может его скачать. Загрузите его в панели.');
+    try {
+      const file = await ctx.getFile();
+      if (!file.file_path) return ctx.reply('Telegram не отдал файл, попробуйте ещё раз');
+      const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+      if (!res.ok) return ctx.reply('Не удалось скачать голосовое, попробуйте ещё раз');
+      const data = Buffer.from(await res.arrayBuffer());
+      const ext = file.file_path.split('.').pop() ?? 'ogg';
+      const r = await actions.transcribeVoice(
+        { name: `voice-${m.file_unique_id}.${ext}`, mimeType: m.mime_type ?? 'audio/ogg', data },
+        ctx.chat.id,
+        actor,
+      );
+      return ctx.reply(r.ok ? `🎙 ${r.message}` : `⚠️ ${r.message}`);
+    } catch (err) {
+      logger.error({ err }, 'voice failed');
+      return ctx.reply('Не получилось обработать голосовое, попробуйте ещё раз');
     }
   });
 

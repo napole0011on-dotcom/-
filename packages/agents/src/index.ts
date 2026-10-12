@@ -26,3 +26,6 @@ export * from './agent-registry.js';
 export * from './agents/image.js';
 export * from './executors.js';
 export * from './presets.js';
+export * from './tools/media.js';
+export * from './tools/subtitles.js';
+export * from './tools/registry.js';

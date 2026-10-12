@@ -37,6 +37,18 @@ export const SYSTEM_LINKS: readonly (readonly [string, string])[] = [
 export const isSystemLink = (from: string, to: string) =>
   SYSTEM_LINKS.some(([f, t]) => f === from && t === to);
 
+/**
+ * Tool nodes that start from a file, not from the brief: their links bring the task's
+ * transcript to the linked agents. Allowed targets are fixed (spec of stage 2.7).
+ */
+export const SOURCE_TOOLS = ['stt_voice', 'video_transcribe'] as const;
+export const SOURCE_TARGETS: Record<string, readonly string[]> = {
+  stt_voice: ['reels', 'kp', 'copywriter', 'seo'],
+  video_transcribe: ['video_summary', 'reels', 'copywriter', 'seo'],
+};
+/** Tools that are never linked: they run from their own page after a human decision. */
+export const UNLINKABLE_TOOLS = ['mailer_send'] as const;
+
 /** Color tokens for agents, assigned round-robin and stored in the registry. */
 export const AGENT_COLORS = [
   'violet',
@@ -76,6 +88,15 @@ export function validateLink(
   if (from === OWNER) return '«Вы» — последний шаг: дальше результат идёт только на экспорт';
   if (from === BRIEF && to !== PLANNER) return 'Бриф передаётся только CEO: сначала нужен план';
   if (to === PLANNER) return 'CEO получает только бриф';
+  if (
+    (UNLINKABLE_TOOLS as readonly string[]).includes(from) ||
+    (UNLINKABLE_TOOLS as readonly string[]).includes(to)
+  )
+    return 'Отправка писем не связывается с агентами: она запускается со страницы «Рассылка» после вашего подтверждения';
+  if ((SOURCE_TOOLS as readonly string[]).includes(to))
+    return 'Расшифровка начинается с файла (голосовое или видео), в неё связи не входят';
+  if ((SOURCE_TOOLS as readonly string[]).includes(from) && !SOURCE_TARGETS[from]!.includes(to))
+    return `Расшифровку можно передать только агентам: ${SOURCE_TARGETS[from]!.join(', ')}`;
   if (links.some((l) => l.from === from && l.to === to)) return 'Такая связь уже есть';
   if (hasPath(links, to, from)) return 'Получится цикл: агенты будут ждать друг друга бесконечно';
   return null;
@@ -94,6 +115,8 @@ export interface PipelineStep {
   after: string[];
   /** The step's result is checked by the Critic (link step -> Critic) before going further. */
   reviewed: boolean;
+  /** Source tools linked to this step (stt_voice, video_transcribe): it gets their transcripts. */
+  inputs?: string[];
 }
 
 /** Snapshot stored in the plan: what will run, in which order, and what is switched off. */
@@ -109,14 +132,20 @@ export interface Pipeline {
  * Critic is a reviewer, not a step: "A -> Critic -> B" means B gets A's result after review.
  * An inactive node blocks the path through it (its links start working once it is active).
  */
-export function buildPipeline(nodes: GraphNode[], links: GraphLink[]): Pipeline {
+export function buildPipeline(
+  nodes: GraphNode[],
+  links: GraphLink[],
+  /** Source tools that have an attachment in this task (their links start working). */
+  sources: readonly string[] = [],
+): Pipeline {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const active = (id: string) => {
     const n = byId.get(id);
     return !!n && n.kind !== 'human' && n.status === 'active';
   };
+  const liveSources = sources.filter((x) => active(x));
   const reach = new Set<string>();
-  const stack = [PLANNER];
+  const stack = [PLANNER, ...liveSources];
   while (stack.length) {
     const n = stack.pop()!;
     for (const l of links) {
@@ -127,6 +156,8 @@ export function buildPipeline(nodes: GraphNode[], links: GraphLink[]): Pipeline 
   }
   reach.delete(PLANNER);
   reach.delete(CRITIC);
+  // Source tools are not steps: their output is the task's attachment, already there.
+  for (const src of [...SOURCE_TOOLS, ...liveSources]) reach.delete(src);
   const work = nodes.filter((n) => reach.has(n.id)).map((n) => n.id);
   const has = (f: string, t: string) => links.some((l) => l.from === f && l.to === t);
   const criticOn = active(CRITIC);
@@ -165,6 +196,9 @@ export function buildPipeline(nodes: GraphNode[], links: GraphLink[]): Pipeline 
       name: byId.get(agent)!.name,
       after: deps.get(agent)!,
       reviewed: criticOn && has(agent, CRITIC),
+      ...(liveSources.some((src) => has(src, agent))
+        ? { inputs: liveSources.filter((src) => has(src, agent)) }
+        : {}),
     })),
     inactive,
     links: links.map((l) => ({ from: l.from, to: l.to })),

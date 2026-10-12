@@ -10,7 +10,7 @@ import {
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
 import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
-import { createProviders, createStorage } from '@cms/providers';
+import { createProviders, createSttProvider, createStorage } from '@cms/providers';
 import {
   MockLlmTransport,
   Workflow,
@@ -19,6 +19,7 @@ import {
   ensureWorkspace,
   syncPromptFiles,
   installPresets,
+  purgeExpiredMedia,
   upsertBrand,
 } from '@cms/agents';
 import { makeActions } from './actions.js';
@@ -100,6 +101,7 @@ async function main() {
     pricing,
     logger,
     storage,
+    stt: createSttProvider(config),
     executors: codeExecutors({ db, config, image: providers.image, storage }),
   });
 
@@ -129,8 +131,12 @@ async function main() {
   });
   queueRef.q = queue;
   await queue.work(workflow.handleRun);
-  await queue.scheduleMaintenance('*/5 * * * *', () =>
-    runMaintenance({
+  await queue.scheduleMaintenance('*/5 * * * *', async () => {
+    // Audio/video past MEDIA_RETENTION_DAYS are deleted; transcripts stay.
+    await purgeExpiredMedia({ db, storage, logger }).catch((err: unknown) =>
+      logger.warn({ err }, 'media purge failed'),
+    );
+    return runMaintenance({
       db,
       notifier: channel,
       logger,
@@ -138,8 +144,8 @@ async function main() {
       reservationTtlSeconds: config.queue.jobTimeoutSeconds * 2,
       approvalReminderHours: config.approvalReminderHours,
       enqueue,
-    }),
-  );
+    });
+  });
 
   const actions = makeActions({
     db,
