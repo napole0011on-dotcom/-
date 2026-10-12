@@ -8,11 +8,13 @@ import {
 import { schema, sql, type Db } from '@cms/db';
 import { budgetStatus, finalDecisions, latestArtifacts, type BudgetContext } from '@cms/engine';
 import {
-  AGENTS,
   CeoPlan,
   TEST_TASK_KIND,
-  agentById,
+  activationProblems,
   agentsForRun,
+  constructorSpecOf,
+  listAgents,
+  specHash,
   briefText,
   estimatePlan,
   getControlState,
@@ -62,10 +64,17 @@ async function heldRuns(db: Db) {
 }
 
 /** "agent:copywriter" -> "Копирайтер", "all" -> "все агенты остановлены". */
-export function waitingLabel(waitingFor: string): string {
+export function waitingLabel(waitingFor: string, names: Record<string, string> = {}): string {
   if (waitingFor === 'all') return 'все агенты остановлены';
-  const def = agentById(waitingFor.replace(/^agent:/, ''));
-  return def ? def.name : waitingFor;
+  const id = waitingFor.replace(/^agent:/, '');
+  return names[id] ?? id;
+}
+
+/** Agent id -> name for labels (code and registry agents). */
+export async function agentNames(d: Pick<QueryDeps, 'db' | 'brandId'>) {
+  return Object.fromEntries(
+    (await listAgents(d.db, d.brandId())).map((a) => [a.id, a.name] as const),
+  );
 }
 
 const HUMAN = { kind: 'human', id: 'panel:owner' } as const;
@@ -122,9 +131,15 @@ export async function agentCards(d: QueryDeps) {
   const held = await heldRuns(db);
 
   const cards = [];
-  for (const def of AGENTS) {
-    const ctl = controls.agents[def.id]!;
-    const history = await promptHistory(db, brandId, def.prompt);
+  for (const def of await listAgents(db, brandId)) {
+    const ctl = controls.agents[def.id] ?? {
+      paused: false,
+      disabled: false,
+      modelOverride: null,
+      updatedBy: null,
+      updatedAt: null,
+    };
+    const history = def.promptAgent ? await promptHistory(db, brandId, def.promptAgent) : null;
     const model = await d.controls.modelOf(brandId, def);
     const [running] = await db
       .select({
@@ -167,7 +182,8 @@ export async function agentCards(d: QueryDeps) {
         sql`${costRecords.agent} = ${def.id} and ${costRecords.status} = 'final' and (${costRecords.createdAt} at time zone ${tz})::date = (now() at time zone ${tz})::date`,
       );
 
-    const waiting = def.id === 'ceo' ? waitingPlan[0] : waitingFinal[0];
+    // The owner's gates belong to the planner (plan) and to the working pipeline (package).
+    const waiting = !def.code ? undefined : def.id === 'ceo' ? waitingPlan[0] : waitingFinal[0];
     const recentError =
       last?.status === 'failed' && last.startedAt.getTime() > Date.now() - 24 * 3_600_000;
     const paused = ctl.paused || controls.allPaused;
@@ -190,6 +206,8 @@ export async function agentCards(d: QueryDeps) {
       name: def.name,
       role: def.role,
       description: def.description,
+      kind: def.kind,
+      registryStatus: def.status,
       status,
       currentTask: running
         ? {
@@ -213,8 +231,8 @@ export async function agentCards(d: QueryDeps) {
         source: model.source,
         ignoredOverride: model.ignoredOverride,
       },
-      promptVersion: history.active.label,
-      pendingFilePrompt: history.pendingFile?.label ?? null,
+      promptVersion: history?.active?.label ?? null,
+      pendingFilePrompt: history?.pendingFile?.label ?? null,
       controls: {
         paused: ctl.paused,
         disabled: ctl.disabled,
@@ -226,7 +244,7 @@ export async function agentCards(d: QueryDeps) {
       waitingRuns: held.filter(
         (r) =>
           r.waitingFor === `agent:${def.id}` ||
-          (r.waitingFor === 'all' && agentsForRun(r).includes(def.id as never)),
+          (r.waitingFor === 'all' && agentsForRun(r).includes(def.id)),
       ).length,
     });
   }
@@ -258,9 +276,10 @@ export async function taskBoard(d: QueryDeps) {
     rows.map((r) => r.id),
   );
   const held = await heldRuns(d.db);
+  const names = await agentNames(d);
   const waitingOf = (taskId: string) => {
     const r = held.find((h) => h.taskId === taskId);
-    return r?.waitingFor ? waitingLabel(r.waitingFor) : null;
+    return r?.waitingFor ? waitingLabel(r.waitingFor, names) : null;
   };
   return rows.map((t) => ({
     waitingFor: waitingOf(t.id),
@@ -294,6 +313,7 @@ export async function taskDetail(d: QueryDeps, taskId: string) {
     .from(tasks)
     .where(sql`${tasks.id} = ${taskId}`);
   if (!t) return null;
+  const names = await agentNames(d);
   const arts = await db
     .select()
     .from(artifacts)
@@ -344,7 +364,7 @@ export async function taskDetail(d: QueryDeps, taskId: string) {
       budgetUsd: spent.limitUsd,
       waitingFor: (() => {
         const w = runRows.find((r) => r.status === 'queued' && r.waitingFor)?.waitingFor;
-        return w ? waitingLabel(w) : null;
+        return w ? waitingLabel(w, names) : null;
       })(),
     },
     actions: allowedActions(t.status),
@@ -627,15 +647,43 @@ export async function spendOverview(d: QueryDeps) {
 
 /** "Настроить" drawer: controls, model choice (price list only) and prompt versions. */
 export async function agentSettingsView(d: QueryDeps, agentId: string) {
-  const def = agentById(agentId);
-  if (!def) return null;
   const brandId = d.brandId();
+  const def = await d.controls.agent(brandId, agentId);
+  if (!def?.promptAgent) return null;
   const controls = await getControlState(d.db, brandId);
-  const ctl = controls.agents[def.id]!;
+  const ctl = controls.agents[def.id] ?? {
+    paused: false,
+    disabled: false,
+    updatedAt: null,
+    updatedBy: null,
+  };
   const model = await d.controls.modelOf(brandId, def);
-  const prompts = await promptHistory(d.db, brandId, def.prompt);
+  const prompts = await promptHistory(d.db, brandId, def.promptAgent);
+  let constructor = null;
+  if (def.kind === 'constructor') {
+    const { spec, raw } = constructorSpecOf(def);
+    const lastTest = (raw as { lastTest?: unknown }).lastTest ?? null;
+    constructor = {
+      fields: (raw as { fields?: unknown }).fields ?? [],
+      criteria: (raw as { criteria?: unknown }).criteria ?? [],
+      lastTest,
+      specHash: spec ? specHash(spec) : null,
+      activationProblems:
+        def.status === 'active' ? [] : await activationProblems(d.db, brandId, def),
+    };
+  }
   return {
-    agent: { id: def.id, name: def.name, role: def.role, description: def.description },
+    agent: {
+      id: def.id,
+      name: def.name,
+      role: def.role,
+      description: def.description,
+      kind: def.kind,
+      status: def.status,
+      color: def.color,
+      icon: def.icon,
+    },
+    constructor,
     controls: {
       paused: ctl.paused,
       disabled: ctl.disabled,
@@ -643,7 +691,7 @@ export async function agentSettingsView(d: QueryDeps, agentId: string) {
       updatedAt: ctl.updatedAt,
       updatedBy: ctl.updatedBy,
     },
-    model: { ...model, role: def.modelRole, allowed: d.controls.allowedModels() },
+    model: { ...model, role: def.modelRole ?? 'worker', allowed: d.controls.allowedModels() },
     prompts: {
       maxBytes: 32 * 1024,
       active: prompts.active,

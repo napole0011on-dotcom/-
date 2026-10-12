@@ -397,8 +397,9 @@ describe('web panel API (Postgres)', () => {
           promptVersion: string;
         }[]
       >();
-      expect(cards.map((c) => c.id)).toEqual(['ceo', 'copywriter', 'critic']);
-      for (const c of cards) {
+      // Code agents with stats, then the planned board agents (no runs yet).
+      expect(cards.map((c) => c.id)).toEqual(['ceo', 'copywriter', 'critic', 'seo', 'image']);
+      for (const c of cards.slice(0, 3)) {
         expect(c.lastRunAt).not.toBeNull();
         expect(c.success.ok).toBeGreaterThan(0);
         expect(c.model.source).toBe('.env');
@@ -520,6 +521,79 @@ describe('web panel API (Postgres)', () => {
         );
       expect(new Set(audit.map((a) => a.action)).size).toBe(8);
       expect(audit.every((a) => a.actor === 'panel:owner')).toBe(true);
+    });
+
+    it('constructor: create draft, fields, prompt, test, activate; code agents are protected', async () => {
+      const s = await loginOk();
+      mirrored.length = 0;
+      const created = await post(s, '/api/agents', {
+        name: 'Хэштеги',
+        role: 'подбирает хэштеги к постам',
+        modelRole: 'worker',
+        prompt: 'Подбирай хэштеги строго по теме поста.',
+      });
+      expect(created.statusCode).toBe(200);
+      const id = created.json<{ id: string }>().id;
+      expect(id).toBe('heshtegi');
+      expect((await post(s, '/api/agents', { name: 'Хэштеги', role: 'ещё раз' })).statusCode).toBe(
+        409,
+      );
+      expect((await post(s, '/api/agents', { name: 'X', role: 'r' })).statusCode).toBe(400);
+
+      type Settings = {
+        agent: { status: string; kind: string };
+        constructor: { activationProblems: string[]; lastTest: { ok: boolean } | null } | null;
+        prompts: { active: { label: string } | null };
+      };
+      let st = (await get(s, `/api/agents/${id}/settings`)).json<Settings>();
+      expect(st.agent).toMatchObject({ status: 'draft', kind: 'constructor' });
+      expect(st.constructor!.activationProblems.join(' ')).toMatch(/поле/);
+      expect(st.prompts.active!.label).toMatch(/^heshtegi@1#/);
+
+      expect((await post(s, `/api/agents/${id}/activate`)).statusCode).toBe(409);
+      const def = await post(s, `/api/agents/${id}/definition`, {
+        fields: [{ key: 'tags', label: 'Хэштеги', type: 'list', minItems: 3 }],
+        criteria: ['только по теме поста'],
+      });
+      expect(def.statusCode).toBe(200);
+      const test = await post(s, `/api/agents/${id}/test`, {});
+      expect(test.json<{ ok: boolean; recorded: boolean }>()).toMatchObject({
+        ok: true,
+        recorded: true,
+      });
+      st = (await get(s, `/api/agents/${id}/settings`)).json<Settings>();
+      expect(st.constructor!.activationProblems).toEqual([]);
+      expect((await post(s, `/api/agents/${id}/activate`)).statusCode).toBe(200);
+      const cards = (await get(s, '/api/agents')).json<{ id: string; registryStatus: string }[]>();
+      expect(cards.find((c) => c.id === id)!.registryStatus).toBe('active');
+      expect(mirrored.map((m) => m.text).join('\n')).toMatch(/Хэштеги» включён/);
+
+      // Registry agents use the same controls (pause, model) as code agents.
+      expect((await post(s, `/api/agents/${id}/pause`)).statusCode).toBe(200);
+      expect((await post(s, `/api/agents/${id}/resume`)).statusCode).toBe(200);
+      expect((await post(s, '/api/agents/ceo/definition', { name: 'Шеф' })).statusCode).toBe(409);
+      expect((await post(s, '/api/agents/ceo/delete')).statusCode).toBe(409);
+      expect((await post(s, `/api/agents/${id}/delete`)).statusCode).toBe(409); // active
+      expect((await post(s, `/api/agents/${id}/deactivate`)).statusCode).toBe(200);
+      expect((await post(s, `/api/agents/${id}/delete`)).statusCode).toBe(200);
+      expect((await get(s, `/api/agents/${id}/settings`)).statusCode).toBe(404);
+      const audit = await t.db
+        .select({ action: schema.auditLog.action })
+        .from(schema.auditLog)
+        .where(sql`${schema.auditLog.details} ->> 'agent' = ${id}`);
+      expect(new Set(audit.map((a) => a.action))).toEqual(
+        new Set([
+          'agent_created',
+          'prompt_saved',
+          'agent_updated',
+          'agent_test',
+          'agent_activated',
+          'agent_paused',
+          'agent_resumed',
+          'agent_deactivated',
+          'agent_deleted',
+        ]),
+      );
     });
 
     it('workspace: board, links (validated, audited, mirrored), layout, events, task path, SSE', async () => {

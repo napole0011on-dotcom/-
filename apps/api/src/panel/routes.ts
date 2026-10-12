@@ -5,8 +5,13 @@ import { z } from 'zod';
 import { errorToJson, type Actor, type Logger, type PanelConfig } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
 import {
-  AGENTS,
+  AgentDraftInput,
+  activateConstructorAgent,
   addLink,
+  createConstructorAgent,
+  deactivateConstructorAgent,
+  deleteConstructorAgent,
+  updateConstructorAgent,
   autoArrange,
   deleteLink,
   runAgentTest,
@@ -363,7 +368,8 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   ) =>
     app.post<{ Params: AgentParams }>(`/api/agents/:agent/${path}`, async (req, reply) => {
       const agent = agentParam.safeParse(req.params.agent);
-      if (!agent.success) return reply.code(404).send({ ok: false, message: 'Нет такого агента' });
+      if (!agent.success || !(await d.controls.agent(brand(), agent.data)))
+        return reply.code(404).send({ ok: false, message: 'Нет такого агента' });
       return handler(agent.data, req, reply);
     });
 
@@ -405,14 +411,18 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
 
   agentRoute('test', async (a, req, reply) => {
     const body = z
-      .object({ promptText: z.string().max(200_000).nullable().optional() })
+      .object({
+        promptText: z.string().max(200_000).nullable().optional(),
+        // Unsaved fields from the constructor (validated by ConstructorSpec in the test).
+        spec: z.unknown().optional(),
+      })
       .safeParse(req.body ?? {});
     if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверный запрос' });
     const r = await runAgentTest(
       { db: d.db, config: d.config, controls: d.controls, logger: d.logger },
       brand(),
       a,
-      { promptText: body.data.promptText ?? null },
+      { promptText: body.data.promptText ?? null, spec: body.data.spec ?? null },
       ACTOR,
     );
     return reply.code(r.ok ? 200 : 409).send(r);
@@ -421,8 +431,70 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   app.get<{ Params: { agent: string } }>('/api/agents/:agent/settings', async (req, reply) => {
     const agent = agentParam.safeParse(req.params.agent);
     if (!agent.success) return reply.code(404).send({ error: 'Нет такого агента' });
-    return agentSettingsView(d, agent.data);
+    return (
+      (await agentSettingsView(d, agent.data)) ??
+      reply.code(404).send({ error: 'Нет такого агента' })
+    );
   });
+
+  // ------------------------------------------------------------------ registry (constructor)
+  const createBody = z.object({
+    name: z.string().max(200),
+    role: z.string().max(400),
+    description: z.string().max(2000).optional(),
+    modelRole: z.string().max(20).optional(),
+    prompt: z.string().max(200_000).nullable().optional(),
+  });
+  app.post('/api/agents', async (req, reply) => {
+    const body = createBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    const fields = AgentDraftInput.parse(body.data);
+    if (!fields.ok) return reply.code(400).send(fields);
+    return control(reply, () =>
+      createConstructorAgent(
+        d.db,
+        brand(),
+        { ...fields.value, prompt: body.data.prompt ?? null },
+        ACTOR,
+      ),
+    );
+  });
+  const definitionBody = z.object({
+    name: z.string().max(200).optional(),
+    role: z.string().max(400).optional(),
+    description: z.string().max(2000).optional(),
+    modelRole: z.string().max(20).optional(),
+    fields: z.array(z.unknown()).max(50).optional(),
+    criteria: z.array(z.unknown()).max(50).optional(),
+  });
+  agentRoute('definition', (a, req, reply) => {
+    const body = definitionBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    const { modelRole, ...rest } = body.data;
+    return control(reply, () =>
+      updateConstructorAgent(
+        d.db,
+        brand(),
+        a,
+        {
+          ...rest,
+          ...(modelRole ? { modelRole: modelRole as 'worker' } : {}),
+        },
+        ACTOR,
+      ),
+    );
+  });
+  agentRoute('activate', (a, _r, reply) =>
+    control(reply, () =>
+      activateConstructorAgent(d.db, brand(), a, ACTOR, () => d.controls.release()),
+    ),
+  );
+  agentRoute('deactivate', (a, _r, reply) =>
+    control(reply, () => deactivateConstructorAgent(d.db, brand(), a, ACTOR)),
+  );
+  agentRoute('delete', (a, _r, reply) =>
+    control(reply, () => deleteConstructorAgent(d.db, brand(), a, ACTOR)),
+  );
 
   // ------------------------------------------------------------------ workspace (board)
   app.get('/api/workspace', async () => workspaceView(d));
@@ -496,4 +568,5 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   });
 }
 
-const agentParam = z.enum(AGENTS.map((a) => a.id) as [string, ...string[]]);
+/** Agent ids: code agents and registry agents (existence is checked by the handlers). */
+const agentParam = z.string().regex(/^[a-z][a-z0-9_]{1,39}$/);
