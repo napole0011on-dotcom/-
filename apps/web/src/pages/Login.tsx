@@ -34,7 +34,7 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
     <div className="login">
       <form className="card login-card" onSubmit={(e) => void submit(e)}>
         <div className="logo">
-          Content<span>Agents</span>
+          Content<b>Agents</b>
         </div>
         <label>
           Пароль

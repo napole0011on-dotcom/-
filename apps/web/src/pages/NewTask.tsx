@@ -12,7 +12,9 @@ export function NewTask() {
   const tooShort = brief.trim().length < 10;
   return (
     <>
-      <h1>Новая задача</h1>
+      <div className="page-head">
+        <h1>Новая задача</h1>
+      </div>
       <div className="card stack narrow">
         <label htmlFor="brief">Бриф</label>
         <textarea

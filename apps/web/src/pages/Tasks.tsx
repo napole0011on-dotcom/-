@@ -8,7 +8,7 @@ export function Tasks() {
   if (!data) return <ErrorBox error={error} />;
   return (
     <>
-      <div className="row between">
+      <div className="page-head">
         <h1>Задачи</h1>
         <Link className="btn btn-primary" to="/tasks/new">
           + Новая задача

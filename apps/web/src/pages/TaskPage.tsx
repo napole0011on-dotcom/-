@@ -5,12 +5,22 @@ import { Button, ConfirmButton, ErrorBox, Link, Loading, Pill, useAction } from 
 import {
   CopyItemView,
   ItemDecision,
+  NodeDecision,
+  NodeItemView,
   PackageActions,
   PlanDecision,
   PlanView,
 } from '../components/decisions';
 
 type Copy = TaskDetail['copies'][number];
+type NodeRow = TaskDetail['nodes'][number];
+
+/** Latest version per node slot. */
+const latestNodes = (rows: NodeRow[]) => {
+  const by = new Map<string, NodeRow>();
+  for (const r of rows) if ((by.get(r.slot)?.version ?? 0) < r.version) by.set(r.slot, r);
+  return [...by.values()];
+};
 
 /** Latest version per slot, older versions kept for the history block. */
 function groupCopies(copies: Copy[]) {
@@ -166,6 +176,34 @@ export function TaskPage({ id }: { id: string }) {
                     </div>
                   ))}
                 </details>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {data.nodes.length > 0 && (
+        <section className="card">
+          <h2>Результаты других агентов</h2>
+          {latestNodes(data.nodes).map((n) => (
+            <div key={n.slot} className="copy-block">
+              <NodeItemView item={n} />
+              {n.decision ? (
+                <div className="small decision-note">
+                  {DECISION_LABEL[n.decision.decision]} — {actorLabel(n.decision.by)},{' '}
+                  {dateTime(n.decision.at)}
+                  {n.decision.comment ? ` · «${n.decision.comment}»` : ''}
+                </div>
+              ) : (
+                actions.decideItems && <NodeDecision artifactId={n.artifactId} />
+              )}
+              {n.runId && (
+                <div className="small">
+                  <Link to={`/runs/${n.runId}`}>Запуск</Link>{' '}
+                  <span className="muted">
+                    · {n.promptVersion} · {n.model}
+                  </span>
+                </div>
               )}
             </div>
           ))}

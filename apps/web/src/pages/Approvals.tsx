@@ -4,6 +4,8 @@ import { Empty, ErrorBox, Link, Loading, Pill } from '../ui';
 import {
   CopyItemView,
   ItemDecision,
+  NodeDecision,
+  NodeItemView,
   PackageActions,
   PlanDecision,
   PlanView,
@@ -15,7 +17,9 @@ export function Approvals() {
   if (!data) return <ErrorBox error={error} />;
   return (
     <>
-      <h1>Согласование</h1>
+      <div className="page-head">
+        <h1>Согласование</h1>
+      </div>
       <ErrorBox error={error} />
       {data.count === 0 && <Empty>Ничего не ждёт вашего решения.</Empty>}
 
@@ -57,13 +61,19 @@ export function Approvals() {
               <ItemDecision artifactId={it.artifactId} />
             </div>
           ))}
-          {p.items.length === 0 && (
-            <Empty>Тексты в доработке — новая версия появится здесь автоматически.</Empty>
+          {p.nodeItems.map((it) => (
+            <div className="copy-block" key={it.artifactId}>
+              <NodeItemView item={it} />
+              <NodeDecision artifactId={it.artifactId} />
+            </div>
+          ))}
+          {p.items.length === 0 && p.nodeItems.length === 0 && (
+            <Empty>Результаты в доработке — новая версия появится здесь автоматически.</Empty>
           )}
           <PackageActions
             taskId={p.taskId}
             canReject={p.canReject}
-            canApproveAll={p.canReject && p.items.length > 0}
+            canApproveAll={p.canReject && p.items.length + p.nodeItems.length > 0}
           />
         </section>
       ))}

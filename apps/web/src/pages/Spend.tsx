@@ -7,11 +7,10 @@ function Meter({ title, line }: { title: string; line: BudgetLine }) {
   const ratio = line.limitUsd > 0 ? Math.min(1, line.spentUsd / line.limitUsd) : 0;
   return (
     <div className="card meter-card">
-      <div className="row between">
-        <h2>{title}</h2>
-        <span>
-          <b>{usd(line.spentUsd)}</b> <span className="muted">из {usd(line.limitUsd)}</span>
-        </span>
+      <h2 className="muted small">{title}</h2>
+      <div className="row" style={{ alignItems: 'baseline', gap: 'var(--s-2)' }}>
+        <span className="big-number">{usd(line.spentUsd)}</span>
+        <span className="muted">из {usd(line.limitUsd)}</span>
       </div>
       <div className={`meter meter-${line.level}`}>
         <div style={{ width: `${ratio * 100}%` }} />
@@ -44,7 +43,9 @@ export function Spend() {
   if (!data) return <ErrorBox error={error} />;
   return (
     <>
-      <h1>Расходы</h1>
+      <div className="page-head">
+        <h1>Расходы</h1>
+      </div>
       <ErrorBox error={error} />
       <div className="grid two">
         <Meter title="Сегодня" line={data.day} />
