@@ -4,10 +4,13 @@ import { api, setCsrfToken, setUnauthorizedHandler, type LlmStatus, type Session
 import { PROVIDER_LABEL, ROLE_LABEL, actorLabel, dateTime } from './format';
 import { useApprovals, useStatus } from './queries';
 import { matchRoute, usePath } from './router';
+import { Icon } from './icons';
+import { useTheme } from './theme/theme';
 import { Button, ConfirmButton, Link, Loading, useAction } from './ui';
 import { Agents } from './pages/Agents';
 import { Approvals } from './pages/Approvals';
 import { Login } from './pages/Login';
+import { NewAgent } from './pages/NewAgent';
 import { NewTask } from './pages/NewTask';
 import { RunPage } from './pages/RunPage';
 import { Spend } from './pages/Spend';
@@ -36,10 +39,10 @@ function LlmBadge() {
     .filter(Boolean)
     .join('\n');
   return (
-    <div className={`llm-badge provider-${data.provider}`} title={title}>
+    <div className="llm-chip" title={title}>
       <b>{PROVIDER_LABEL[data.provider] ?? data.provider}</b>
       <span>{modelsLabel(data)}</span>
-      {data.unpricedModels.length > 0 && <span className="danger">⚠️ нет цены</span>}
+      {data.unpricedModels.length > 0 && <span className="danger">нет цены в прайсе</span>}
     </div>
   );
 }
@@ -53,13 +56,17 @@ function StopAllButton() {
   if (data.controls.allPaused) {
     return (
       <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
-        ▶ Продолжить всё
+        <Icon name="play" /> Продолжить всё
       </Button>
     );
   }
   return (
     <ConfirmButton
-      label="Остановить всё"
+      label={
+        <>
+          <Icon name="stop" /> Остановить всё
+        </>
+      }
       variant="danger"
       title="Остановить всех агентов?"
       text="Новые запуски всех агентов будут ждать в очереди; те, что уже идут, доработают. Задачи не теряются: после «Продолжить всё» очередь разберётся автоматически."
@@ -75,42 +82,73 @@ function StoppedBanner() {
   const { data } = useStatus();
   if (!data?.controls.allPaused) return null;
   return (
-    <div className="banner">
-      ⏸ Все агенты остановлены
-      {data.controls.changedBy
-        ? ` (${actorLabel(data.controls.changedBy)}, ${dateTime(data.controls.changedAt)})`
-        : ''}
-      . Новые запуски ждут в очереди.
+    <div className="banner" role="status">
+      <Icon name="pause" />
+      <span>
+        Все агенты остановлены
+        {data.controls.changedBy
+          ? ` (${actorLabel(data.controls.changedBy)}, ${dateTime(data.controls.changedAt)})`
+          : ''}
+        . Новые запуски ждут в очереди.
+      </span>
     </div>
+  );
+}
+
+const THEME_LABEL = { system: 'Тема: как в системе', light: 'Тема: светлая', dark: 'Тема: тёмная' };
+
+function ThemeButton() {
+  const [choice, next] = useTheme();
+  return (
+    <Button
+      variant="ghost"
+      className="btn-icon"
+      onClick={next}
+      title={THEME_LABEL[choice]}
+      aria-label={THEME_LABEL[choice]}
+    >
+      <Icon name={choice === 'dark' ? 'moon' : choice === 'light' ? 'sun' : 'monitor'} />
+    </Button>
   );
 }
 
 function Header({ path, onLogout }: { path: string; onLogout: () => void }) {
   const { data: approvals } = useApprovals();
+  // The mobile menu belongs to the page it was opened on: navigating closes it.
+  const [menuAt, setMenuAt] = useState<string | null>(null);
+  const menu = menuAt === path;
+  const setMenu = (open: boolean) => setMenuAt(open ? path : null);
   const nav = [
-    { to: '/', label: 'Агенты', active: path === '/' },
+    { to: '/', label: 'Агенты', icon: 'agents' as const, active: path === '/' },
     {
       to: '/tasks',
       label: 'Задачи',
+      icon: 'tasks' as const,
       active: path.startsWith('/tasks') || path.startsWith('/runs'),
     },
     {
       to: '/approvals',
       label: 'Согласование',
+      icon: 'approvals' as const,
       active: path === '/approvals',
       badge: approvals?.count,
     },
-    { to: '/spend', label: 'Расходы', active: path === '/spend' },
+    { to: '/spend', label: 'Расходы', icon: 'spend' as const, active: path === '/spend' },
   ];
   return (
     <header className="header">
       <div className="header-inner">
         <Link to="/" className="logo">
-          Content<span>Agents</span>
+          Content<b>Agents</b>
         </Link>
-        <nav>
+        <nav className="nav" aria-label="Разделы">
           {nav.map((n) => (
-            <Link key={n.to} to={n.to} className={n.active ? 'active' : ''}>
+            <Link
+              key={n.to}
+              to={n.to}
+              className={n.active ? 'active' : ''}
+              aria-current={n.active ? 'page' : undefined}
+            >
               {n.label}
               {n.badge ? <span className="badge">{n.badge}</span> : null}
             </Link>
@@ -118,15 +156,72 @@ function Header({ path, onLogout }: { path: string; onLogout: () => void }) {
         </nav>
         <div className="header-right">
           <LlmBadge />
-          <Link to="/tasks/new" className="btn btn-primary">
-            + Задача
+          <Link to="/tasks/new" className="btn btn-primary hide-mobile">
+            <Icon name="plus" /> Задача
           </Link>
-          <StopAllButton />
-          <Button variant="ghost" onClick={onLogout}>
-            Выйти
+          <span className="hide-mobile">
+            <StopAllButton />
+          </span>
+          <ThemeButton />
+          <Button
+            variant="ghost"
+            className="hide-mobile"
+            onClick={onLogout}
+            title="Выйти"
+            aria-label="Выйти"
+          >
+            <Icon name="logout" /> <span className="label-wide">Выйти</span>
+          </Button>
+          <Button
+            variant="ghost"
+            className="btn-icon menu-button"
+            aria-label="Меню"
+            aria-expanded={menu}
+            onClick={() => setMenu(true)}
+          >
+            <Icon name="menu" />
           </Button>
         </div>
       </div>
+      {menu && (
+        <div
+          className="mobile-nav"
+          onMouseDown={(e) => e.target === e.currentTarget && setMenu(false)}
+        >
+          <div className="mobile-nav-panel" role="dialog" aria-label="Меню">
+            <div className="row between">
+              <span className="logo">
+                Content<b>Agents</b>
+              </span>
+              <Button
+                variant="ghost"
+                className="btn-icon"
+                aria-label="Закрыть меню"
+                onClick={() => setMenu(false)}
+              >
+                <Icon name="close" />
+              </Button>
+            </div>
+            <nav aria-label="Разделы">
+              {nav.map((n) => (
+                <Link key={n.to} to={n.to} className={n.active ? 'active' : ''}>
+                  <span className="row">
+                    <Icon name={n.icon} /> {n.label}
+                  </span>
+                  {n.badge ? <span className="badge">{n.badge}</span> : null}
+                </Link>
+              ))}
+            </nav>
+            <Link to="/tasks/new" className="btn btn-primary">
+              <Icon name="plus" /> Новая задача
+            </Link>
+            <StopAllButton />
+            <Button variant="ghost" onClick={onLogout}>
+              <Icon name="logout" /> Выйти
+            </Button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
@@ -137,6 +232,7 @@ function Page({ path }: { path: string }) {
   if (path === '/tasks/new') return <NewTask />;
   if (path === '/approvals') return <Approvals />;
   if (path === '/spend') return <Spend />;
+  if (path === '/agents/new') return <NewAgent />;
   const task = matchRoute('/tasks/:id', path);
   if (task) return <TaskPage key={task.id} id={task.id!} />;
   const run = matchRoute('/runs/:id', path);
