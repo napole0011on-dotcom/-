@@ -338,6 +338,7 @@ export interface NodeItem {
   criticRejected: boolean;
   ownerComment: string | null;
   promptVersion?: string | null;
+  files: { name: string; mimeType: string }[];
 }
 
 export interface Approvals {

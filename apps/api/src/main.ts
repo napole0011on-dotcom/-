@@ -18,6 +18,7 @@ import {
   loadBrandProfileFile,
   ensureWorkspace,
   syncPromptFiles,
+  installPresets,
   upsertBrand,
   type OwnerChannel,
 } from '@cms/agents';
@@ -108,6 +109,13 @@ async function main() {
   const port = config.api.port;
   const events = new EventHub(pool, db, () => brand.id, logger);
   await events.start();
+  // Ready-made constructor agents (SEO): saved, tested on the mock ($0), switched on once.
+  const presets = await installPresets(
+    { db, config, controls: workflow.controls, logger },
+    brand.id,
+  );
+  if (presets.length) logger.info({ presets }, 'preset agents installed');
+
   await registerPanel(app, {
     db,
     config,
@@ -119,6 +127,7 @@ async function main() {
     mirror: createMirror(config.telegram.botToken, config.telegram.ownerId),
     logger,
     events,
+    storage,
     allowedOrigins: [
       `http://127.0.0.1:${port}`,
       `http://localhost:${port}`,

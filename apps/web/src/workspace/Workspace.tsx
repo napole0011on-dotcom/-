@@ -536,8 +536,6 @@ function WorkspaceInner() {
   );
 }
 
-const CODE_AGENTS = new Set(['ceo', 'copywriter', 'critic']);
-
 function SidePanel({
   ws,
   sel,
@@ -669,7 +667,7 @@ function SidePanel({
           </>
         )}
       </dl>
-      {card && CODE_AGENTS.has(n.id) && (
+      {card && n.kind === 'code' && n.status === 'active' && (
         <div className="row wrap">
           <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
           <Button onClick={() => onDrawer(n.id, 'test')}>

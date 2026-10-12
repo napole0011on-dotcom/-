@@ -1413,3 +1413,19 @@ label {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.node-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: var(--s-2) 0;
+}
+.node-images img {
+  display: block;
+  height: 120px;
+  width: auto;
+  max-width: 100%;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}

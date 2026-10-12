@@ -295,6 +295,27 @@ export function NodeItemView({ item }: { item: NodeItem }) {
       {item.ownerComment && (
         <div className="owner-comment small">Ваш комментарий учтён: «{item.ownerComment}»</div>
       )}
+      {item.files.some((f) => f.mimeType.startsWith('image/')) && (
+        <div className="node-images">
+          {item.files.map((f, i) =>
+            f.mimeType.startsWith('image/') ? (
+              <a
+                key={i}
+                href={`/api/artifacts/${item.artifactId}/files/${i}`}
+                target="_blank"
+                rel="noreferrer"
+                title={f.name}
+              >
+                <img
+                  src={`/api/artifacts/${item.artifactId}/files/${i}`}
+                  alt={item.lines[i] ?? f.name}
+                  loading="lazy"
+                />
+              </a>
+            ) : null,
+          )}
+        </div>
+      )}
       <ul className="small">
         {item.lines.map((l, i) => (
           <li key={i}>{l}</li>

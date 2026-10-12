@@ -19,6 +19,7 @@ import {
   type DecisionResult,
   type Workflow,
 } from '@cms/agents';
+import type { ObjectStorage } from '@cms/providers';
 import type { EventHub } from './event-hub.js';
 import {
   agentSettingsView,
@@ -51,6 +52,8 @@ export interface PanelDeps extends Omit<QueryDeps, 'controls'> {
   allowedOrigins: string[];
   /** Live agent events for the board (SSE); without it the panel falls back to polling. */
   events?: EventHub;
+  /** Files of results (images) shown in the panel. */
+  storage?: ObjectStorage;
 }
 
 declare module 'fastify' {
@@ -494,6 +497,29 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   );
   agentRoute('delete', (a, _r, reply) =>
     control(reply, () => deleteConstructorAgent(d.db, brand(), a, ACTOR)),
+  );
+
+  // Files of a result (images): only keys the artifact itself refers to are served.
+  app.get<{ Params: { id: string; n: string } }>(
+    '/api/artifacts/:id/files/:n',
+    async (req, reply) => {
+      if (!uuid.safeParse(req.params.id).success || !/^\d{1,3}$/.test(req.params.n))
+        return reply.code(400).send({ error: 'Неверный запрос' });
+      if (!d.storage) return reply.code(404).send({ error: 'Хранилище не подключено' });
+      const [a] = await d.db
+        .select({ content: schema.artifacts.content })
+        .from(schema.artifacts)
+        .where(sql`${schema.artifacts.id} = ${req.params.id}`);
+      const f = (a?.content as { files?: { key: string; mimeType: string }[] } | undefined)
+        ?.files?.[Number(req.params.n)];
+      if (!f || !/^image\/(png|jpeg|webp)$/.test(f.mimeType))
+        return reply.code(404).send({ error: 'Файл не найден' });
+      const body = await d.storage.get(f.key);
+      return reply
+        .header('Content-Type', f.mimeType)
+        .header('Cache-Control', 'private, max-age=3600')
+        .send(body);
+    },
   );
 
   // ------------------------------------------------------------------ workspace (board)
