@@ -99,6 +99,8 @@ const envSchema = z
     BUDGET_DAILY_USD: usd.default(5),
     BUDGET_MONTHLY_USD: usd.default(50),
     BUDGET_TASK_USD: usd.default(2),
+    /** Budget reserved per generated image before the call (TODO(verify): Magnific price list). */
+    IMAGE_MAX_COST_USD: usd.default(0.1),
     BUDGET_WARN_RATIO: z.coerce.number().gt(0).lt(1).default(0.8),
 
     QUEUE_RETRY_LIMIT: z.coerce.number().int().min(0).max(20).default(3),
@@ -189,6 +191,8 @@ export interface AppConfig {
   db: { host: string; port: number; user: string; password: string; database: string };
   storage: StorageConfig;
   providersMode: Env['PROVIDERS_MODE'];
+  /** Worst-case price of one image, reserved in the budget before generation. */
+  imageMaxCostUsd: number;
   dryRun: boolean;
   publishEnabled: boolean;
   api: { host: string; port: number };
@@ -297,6 +301,7 @@ export function loadConfig(
     },
     storage,
     providersMode: e.PROVIDERS_MODE,
+    imageMaxCostUsd: e.IMAGE_MAX_COST_USD,
     dryRun: e.DRY_RUN,
     publishEnabled: e.PUBLISH_ENABLED,
     api: { host: e.API_HOST, port: e.API_PORT },

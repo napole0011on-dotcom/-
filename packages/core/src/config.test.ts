@@ -23,6 +23,7 @@ describe('loadConfig', () => {
     expect(c.providersMode).toBe('mock');
     expect(c.dryRun).toBe(true);
     expect(c.publishEnabled).toBe(false);
+    expect(c.imageMaxCostUsd).toBe(0.1);
     expect(c.storage.driver).toBe('local');
     expect(c.db.port).toBe(5432);
   });
