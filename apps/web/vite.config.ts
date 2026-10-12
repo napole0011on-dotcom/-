@@ -1,10 +1,12 @@
-import { defineConfig } from 'vite';
+import { defaultClientConditions, defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Dev server for the panel. /api is proxied to the Fastify API, so the browser sees one origin
 // (the API allows http://127.0.0.1:5173 as Origin for state-changing requests).
 export default defineConfig({
   plugins: [react()],
+  // Shared pure modules (e.g. @cms/agents/graph link rules) are compiled from source.
+  resolve: { conditions: ['@cms/source', ...defaultClientConditions] },
   server: {
     host: '127.0.0.1',
     port: 5173,

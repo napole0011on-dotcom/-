@@ -3,6 +3,9 @@ import {
   api,
   type AgentCard,
   type AgentSettings,
+  type LiveEvent,
+  type TaskPathData,
+  type WorkspaceData,
   type Approvals,
   type LlmStatus,
   type RunCardData,
@@ -63,4 +66,25 @@ export const useAgentSettings = (id: string) =>
     queryKey: ['agent-settings', id],
     queryFn: () => api.get<AgentSettings>(`/api/agents/${id}/settings`),
     refetchInterval: SLOW,
+  });
+
+export const useWorkspace = () =>
+  useQuery({
+    queryKey: ['workspace'],
+    queryFn: () => api.get<WorkspaceData>('/api/workspace'),
+    refetchInterval: FAST,
+  });
+/** Live feed; SSE pushes new events, polling is the fallback (interval set by the caller). */
+export const useEvents = (pollMs: number | false) =>
+  useQuery({
+    queryKey: ['events'],
+    queryFn: () => api.get<LiveEvent[]>('/api/events'),
+    refetchInterval: pollMs,
+  });
+export const useTaskPath = (id: string | null) =>
+  useQuery({
+    queryKey: ['task-path', id],
+    queryFn: () => api.get<TaskPathData>(`/api/tasks/${id}/path`),
+    enabled: !!id,
+    refetchInterval: FAST,
   });

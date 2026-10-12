@@ -62,6 +62,7 @@ export interface AgentCard {
   lastRunAt: string | null;
   lastRunId: string | null;
   success: { ok: number; failed: number; rate: number | null };
+  runs30: number;
   spentTodayUsd: number;
   model: {
     name: string;
@@ -229,6 +230,13 @@ export interface TaskDetail {
     model: string | null;
     plan: Plan;
   }[];
+  nodes: (NodeItem & {
+    slot: string;
+    createdAt: string;
+    runId: string | null;
+    model: string | null;
+    decision: { decision: Decision; comment: string | null; by: string; at: string } | null;
+  })[];
   copies: (ItemView & {
     slot: string;
     createdAt: string;
@@ -264,6 +272,20 @@ export interface TaskDetail {
   }[];
 }
 
+/** Result of another agent of the graph (SEO, Image, ...). */
+export interface NodeItem {
+  artifactId: string;
+  version: number;
+  agent: string;
+  agentName: string;
+  title: string;
+  lines: string[];
+  critic: { passed: boolean; summary: string; issues: { problem: string; fix: string }[] } | null;
+  criticRejected: boolean;
+  ownerComment: string | null;
+  promptVersion?: string | null;
+}
+
 export interface Approvals {
   plans: {
     taskId: string;
@@ -285,6 +307,7 @@ export interface Approvals {
     pendingCount: number;
     canReject: boolean;
     items: ItemView[];
+    nodeItems: NodeItem[];
   }[];
   count: number;
 }
@@ -368,6 +391,66 @@ export interface ActionResult {
   ok: boolean;
   message: string;
   taskId?: string;
+}
+
+export type NodeKind = 'human' | 'code' | 'constructor' | 'tool';
+export type NodeStatus = 'active' | 'draft' | 'planned';
+
+export interface WorkspaceNodeData {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  kind: NodeKind;
+  status: NodeStatus;
+  color: string;
+  icon: string;
+  position: { x: number; y: number };
+  card: AgentCard | null;
+}
+
+export interface WorkspaceLinkData {
+  id: string;
+  from: string;
+  to: string;
+  kind: 'system' | 'user';
+  active: boolean;
+  deletable: boolean;
+}
+
+export interface WorkspaceData {
+  nodes: WorkspaceNodeData[];
+  links: WorkspaceLinkData[];
+}
+
+export interface LiveEvent {
+  id: number;
+  at: string;
+  agent: string;
+  taskId: string | null;
+  runId: string | null;
+  kind: string;
+  text: string;
+  costUsd: number | null;
+}
+
+export interface PipelineData {
+  steps: { agent: string; name: string; after: string[]; reviewed: boolean }[];
+  inactive: { agent: string; name: string; reason: string }[];
+  links: { from: string; to: string }[];
+}
+
+export interface TaskPathData {
+  taskId: string;
+  title: string;
+  status: TaskStatus;
+  pipeline: PipelineData | null;
+  nodes: {
+    agent: string;
+    state: 'pending' | 'running' | 'waiting' | 'done' | 'failed';
+    verdict: boolean | null;
+    costUsd: number;
+  }[];
 }
 
 export class ApiError extends Error {

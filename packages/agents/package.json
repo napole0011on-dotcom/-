@@ -11,6 +11,11 @@
     },
     "./testing": {
       "@cms/source": "./src/testing.ts"
+    },
+    "./graph": {
+      "@cms/source": "./src/graph.ts",
+      "types": "./dist/graph.d.ts",
+      "default": "./dist/graph.js"
     }
   },
   "dependencies": {

@@ -218,9 +218,9 @@ export function autoLayout(
   const out: Record<string, { x: number; y: number }> = {};
   const tallest = Math.max(...[...columns.values()].map((c) => c.length));
   for (const [l, ids] of columns) {
-    const offset = ((tallest - ids.length) * (NODE_H + 40)) / 2;
+    const offset = ((tallest - ids.length) * (NODE_H + 30)) / 2;
     ids.forEach((id, i) => {
-      out[id] = { x: l * (NODE_W + 80), y: Math.round(offset + i * (NODE_H + 40)) };
+      out[id] = { x: l * (NODE_W + 50), y: Math.round(offset + i * (NODE_H + 30)) };
     });
   }
   return out;
