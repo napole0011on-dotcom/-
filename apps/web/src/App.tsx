@@ -11,6 +11,8 @@ import { AgentBuilder } from './pages/AgentBuilder';
 import { Agents } from './pages/Agents';
 import { Approvals } from './pages/Approvals';
 import { Login } from './pages/Login';
+import { Mailing } from './pages/Mailing';
+import { TranscriptPage, Transcripts } from './pages/Transcripts';
 import { NewAgent } from './pages/NewAgent';
 import { NewTask } from './pages/NewTask';
 import { RunPage } from './pages/RunPage';
@@ -134,6 +136,13 @@ function Header({ path, onLogout }: { path: string; onLogout: () => void }) {
       active: path === '/approvals',
       badge: approvals?.count,
     },
+    {
+      to: '/transcripts',
+      label: 'Расшифровки',
+      icon: 'mic' as const,
+      active: path.startsWith('/transcripts'),
+    },
+    { to: '/mailing', label: 'Рассылка', icon: 'mail' as const, active: path === '/mailing' },
     { to: '/spend', label: 'Расходы', icon: 'spend' as const, active: path === '/spend' },
   ];
   return (
@@ -234,6 +243,10 @@ function Page({ path }: { path: string }) {
   if (path === '/approvals') return <Approvals />;
   if (path === '/spend') return <Spend />;
   if (path === '/agents/new') return <NewAgent />;
+  if (path === '/transcripts') return <Transcripts />;
+  if (path === '/mailing') return <Mailing />;
+  const transcript = matchRoute('/transcripts/:id', path);
+  if (transcript) return <TranscriptPage key={transcript.id} id={transcript.id!} />;
   const builder = matchRoute('/agents/:id/build', path);
   if (builder) return <AgentBuilder key={builder.id} id={builder.id!} />;
   const task = matchRoute('/tasks/:id', path);

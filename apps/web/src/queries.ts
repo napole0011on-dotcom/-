@@ -12,6 +12,9 @@ import {
   type Spend,
   type TaskDetail,
   type TaskRow,
+  type TranscriptDetail,
+  type TranscriptRow,
+  type MailingData,
 } from './api';
 
 // Live updates by polling: 3 s for things that move (agents, tasks, approvals), 10 s for spend.
@@ -86,5 +89,28 @@ export const useTaskPath = (id: string | null) =>
     queryKey: ['task-path', id],
     queryFn: () => api.get<TaskPathData>(`/api/tasks/${id}/path`),
     enabled: !!id,
+    refetchInterval: FAST,
+  });
+
+export const useTranscripts = () =>
+  useQuery({
+    queryKey: ['transcripts'],
+    queryFn: () => api.get<TranscriptRow[]>('/api/transcripts'),
+    refetchInterval: FAST,
+  });
+
+export const useTranscript = (id: string) =>
+  useQuery({
+    queryKey: ['transcript', id],
+    queryFn: () => api.get<TranscriptDetail>(`/api/transcripts/${id}`),
+    // Poll only while it is still being transcribed.
+    refetchInterval: (q) =>
+      q.state.data && ['done', 'failed', 'cancelled'].includes(q.state.data.status) ? false : FAST,
+  });
+
+export const useMailing = () =>
+  useQuery({
+    queryKey: ['mailing'],
+    queryFn: () => api.get<MailingData>('/api/mailing'),
     refetchInterval: FAST,
   });

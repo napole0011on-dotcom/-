@@ -1,5 +1,13 @@
 import '@xyflow/react/dist/style.css';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Background,
@@ -677,6 +685,32 @@ function SidePanel({
             <Icon name="settings" /> Настроить
           </Button>
         </div>
+      )}
+      {n.tool && (
+        <details className="tool-params" open>
+          <summary>Параметры</summary>
+          <dl className="facts small">
+            {Object.entries(n.tool.params).map(([k, v]) => (
+              <Fragment key={k}>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </Fragment>
+            ))}
+            <dt>Читает</dt>
+            <dd>{n.tool.permissions.reads.join(', ') || '—'}</dd>
+            <dt>Пишет</dt>
+            <dd>{n.tool.permissions.writes.join(', ') || '—'}</dd>
+            <dt>Внешние адреса</dt>
+            <dd>{n.tool.permissions.hosts.join(', ') || 'нет — всё на этом компьютере'}</dd>
+          </dl>
+          <div className="faint small">
+            Меняются в .env и после перезапуска; из панели — только чтение.
+          </div>
+          {n.id === 'mailer_send' && <Link to="/mailing">Открыть «Рассылку»</Link>}
+          {(n.id === 'stt_voice' || n.id === 'video_transcribe') && (
+            <Link to="/transcripts">Открыть «Расшифровки»</Link>
+          )}
+        </details>
       )}
       {n.kind === 'constructor' && (
         <div className="row wrap">

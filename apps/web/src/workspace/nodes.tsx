@@ -93,6 +93,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
   const inactive = n.status !== 'active';
   const cls = [
     'ws-node',
+    n.kind === 'tool' ? 'tool' : '',
     inactive ? 'inactive' : '',
     data.dim ? 'dimmed' : '',
     data.state === 'error' ? 'error' : '',
@@ -120,7 +121,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
         </div>
         <div className="title-block">
           <b className="clamp-1">{n.name}</b>
-          <small className="clamp-1">{n.role}</small>
+          <small className="clamp-1">{n.kind === 'tool' ? `инструмент · ${n.role}` : n.role}</small>
         </div>
       </div>
       <StatePill state={data.state} />

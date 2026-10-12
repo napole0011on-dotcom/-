@@ -464,6 +464,11 @@ export interface WorkspaceNodeData {
   icon: string;
   position: { x: number; y: number };
   card: AgentCard | null;
+  /** Tool steps: permissions and read-only parameters from .env. */
+  tool: {
+    permissions: { reads: string[]; writes: string[]; hosts: string[] };
+    params: Record<string, string>;
+  } | null;
 }
 
 export interface WorkspaceLinkData {
@@ -492,7 +497,7 @@ export interface LiveEvent {
 }
 
 export interface PipelineData {
-  steps: { agent: string; name: string; after: string[]; reviewed: boolean }[];
+  steps: { agent: string; name: string; after: string[]; reviewed: boolean; inputs?: string[] }[];
   inactive: { agent: string; name: string; reason: string }[];
   links: { from: string; to: string }[];
 }
@@ -544,15 +549,17 @@ if (typeof window !== 'undefined') {
 async function request<T>(method: 'GET' | 'POST', url: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (Date.now() - lastActivity < ACTIVE_WINDOW_MS) headers['X-Panel-Activity'] = '1';
+  const form = body instanceof FormData;
   if (method === 'POST') {
-    headers['Content-Type'] = 'application/json';
+    // A FormData upload sets its own multipart Content-Type with the boundary.
+    if (!form) headers['Content-Type'] = 'application/json';
     if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
   }
   const res = await fetch(url, {
     method,
     headers,
     credentials: 'same-origin',
-    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    body: method === 'POST' ? (form ? body : JSON.stringify(body ?? {})) : undefined,
   });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (res.status === 401 && url !== '/api/login') onUnauthorized();
@@ -572,3 +579,69 @@ export const api = {
   get: <T>(url: string) => request<T>('GET', url),
   post: <T = ActionResult>(url: string, body?: unknown) => request<T>('POST', url, body),
 };
+
+export type TranscriptStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface TranscriptRow {
+  id: string;
+  name: string;
+  kind: 'voice' | 'video';
+  source: 'telegram' | 'panel';
+  status: TranscriptStatus;
+  progress: number;
+  durationSec: number | null;
+  preview: string;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface TranscriptDetail {
+  id: string;
+  name: string;
+  kind: 'voice' | 'video';
+  status: TranscriptStatus;
+  error: string | null;
+  language: string | null;
+  provider: string | null;
+  model: string | null;
+  durationSec: number | null;
+  chunksDone: number;
+  chunksTotal: number | null;
+  segments: { start: number; end: number; text: string }[];
+  files: string[];
+  mediaAvailable: boolean;
+  mediaExpiresAt: string;
+  mimeType: string;
+  createdAt: string;
+}
+
+export interface CampaignView {
+  id: string;
+  title: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml: string;
+  status: 'draft' | 'tested' | 'confirmed' | 'sending' | 'stopping' | 'stopped' | 'done';
+  testSentAt: string | null;
+  recipients: number | null;
+  confirmedAt: string | null;
+  createdAt: string;
+  report: { queued: number; sent: number; failed: number; stopped: number; suppressed: number };
+}
+
+export interface MailingData {
+  provider: 'mock' | 'smtp';
+  testTo: boolean;
+  unsubscribeUrl: boolean;
+  limits: { batchSize: number; batchPauseSeconds: number; maxPerDay: number };
+  audience: {
+    total: number;
+    withConsent: number;
+    withoutConsent: number;
+    unsubscribed: number;
+    suppressed: number;
+    eligible: number;
+  };
+  drafts: { artifactId: string; task: string; subject: string; createdAt: string }[];
+  campaigns: CampaignView[];
+}

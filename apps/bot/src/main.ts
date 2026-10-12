@@ -10,7 +10,12 @@ import {
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
 import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
-import { createProviders, createSttProvider, createStorage } from '@cms/providers';
+import {
+  createMailSender,
+  createProviders,
+  createSttProvider,
+  createStorage,
+} from '@cms/providers';
 import {
   MockLlmTransport,
   Workflow,
@@ -102,6 +107,7 @@ async function main() {
     logger,
     storage,
     stt: createSttProvider(config),
+    mail: createMailSender(config),
     executors: codeExecutors({ db, config, image: providers.image, storage }),
   });
 
