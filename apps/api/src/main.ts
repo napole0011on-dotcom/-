@@ -11,7 +11,7 @@ import {
 } from '@cms/core';
 import { createDb, createPool, migrationStatus, pingDb } from '@cms/db';
 import { LlmClient, RunQueue, createLlmTransport } from '@cms/engine';
-import { createProviders, createStorage } from '@cms/providers';
+import { createMailSender, createProviders, createStorage } from '@cms/providers';
 import {
   MockLlmTransport,
   Workflow,
@@ -100,6 +100,9 @@ async function main() {
     config,
     pricing,
     logger,
+    // The panel stores uploads and sends the owner's test email; runs happen in the bot worker.
+    storage,
+    mail: createMailSender(config),
   });
 
   const app = buildServer({

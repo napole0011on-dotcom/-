@@ -6,6 +6,7 @@ import {
   type TaskStatus,
 } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
+import { toolInfo } from './media-routes.js';
 import { budgetStatus, finalDecisions, latestArtifacts, type BudgetContext } from '@cms/engine';
 import {
   CeoPlan,
@@ -53,7 +54,7 @@ export interface QueryDeps {
 }
 
 /** Tasks that never show on the board: smoke tests and agent test runs. */
-const HIDDEN_KINDS = ['smoke', TEST_TASK_KIND];
+const HIDDEN_KINDS = ['smoke', TEST_TASK_KIND, 'media', 'mailing'];
 
 /** Runs held in the queue for a paused agent / "stop everything", by task. */
 async function heldRuns(db: Db) {
@@ -706,6 +707,7 @@ export async function workspaceView(d: QueryDeps) {
   const brandId = d.brandId();
   const ws = await loadWorkspace(d.db, brandId);
   const cards = await agentCards(d);
+  const tools = toolInfo(d.config);
   return {
     nodes: ws.nodes.map((n) => ({
       id: n.id,
@@ -718,6 +720,7 @@ export async function workspaceView(d: QueryDeps) {
       icon: n.icon,
       position: ws.layout[n.id] ?? { x: 0, y: 0 },
       card: cards.find((c) => c.id === n.id) ?? null,
+      tool: tools[n.id] ?? null,
     })),
     links: ws.links.map((l) => ({
       id: l.id,

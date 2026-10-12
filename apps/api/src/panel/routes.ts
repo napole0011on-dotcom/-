@@ -21,6 +21,7 @@ import {
 } from '@cms/agents';
 import type { ObjectStorage } from '@cms/providers';
 import type { EventHub } from './event-hub.js';
+import { registerMediaRoutes } from './media-routes.js';
 import {
   agentSettingsView,
   approvalQueue,
@@ -531,6 +532,16 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
         .send(body);
     },
   );
+
+  await registerMediaRoutes(app, {
+    db: d.db,
+    config: d.config,
+    workflow: d.workflow,
+    brandId: d.brandId,
+    ...(d.storage ? { storage: d.storage } : {}),
+    mirror: d.mirror,
+    logger: d.logger,
+  });
 
   // ------------------------------------------------------------------ workspace (board)
   app.get('/api/workspace', async () => workspaceView(d));

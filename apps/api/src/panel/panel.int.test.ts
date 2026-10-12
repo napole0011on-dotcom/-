@@ -10,6 +10,11 @@ import { request } from 'node:http';
 import { emitEvent } from '@cms/agents';
 import { EventHub } from './event-hub.js';
 import { registerPanel } from './routes.js';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { LocalFsStorage, MockMailSender, MockSttProvider } from '@cms/providers';
 
 const PASSWORD = 'panel-test-password';
 const ORIGIN = 'http://127.0.0.1:3000';
@@ -20,6 +25,7 @@ describe('web panel API (Postgres)', () => {
   let app: ReturnType<typeof buildServer>;
   let wf: Workflow;
   let brandId: string;
+  let mediaDir = '';
   let hub: EventHub;
   const queue: string[] = [];
   const mirrored: { text: string; reopen?: string }[] = [];
@@ -50,6 +56,9 @@ describe('web panel API (Postgres)', () => {
       },
     };
     const pricing = loadPricing(llmCfg.pricingFile);
+    mediaDir = mkdtempSync(path.join(tmpdir(), 'panel-media-'));
+    const storage = new LocalFsStorage(path.join(mediaDir, 'storage'));
+    config.media = { ...config.media, tmpDir: path.join(mediaDir, 'tmp'), chunkSeconds: 5 };
     const channel = new RecordingChannel();
     const llm = new LlmClient({
       db: t.db,
@@ -68,6 +77,9 @@ describe('web panel API (Postgres)', () => {
       config,
       pricing,
       logger: silentLogger,
+      storage,
+      stt: new MockSttProvider(),
+      mail: new MockMailSender(),
     });
     app = buildServer({ logger: silentLogger, checks: {} });
     hub = new EventHub(t.pool, t.db, () => brandId, silentLogger);
@@ -95,12 +107,14 @@ describe('web panel API (Postgres)', () => {
       logger: silentLogger,
       allowedOrigins: [ORIGIN],
       events: hub,
+      storage,
     });
   });
   afterAll(async () => {
     await hub?.stop();
     await app?.close();
     await t?.close();
+    rmSync(mediaDir, { recursive: true, force: true });
   });
   beforeEach(async () => {
     await t.db.delete(schema.panelLoginState);
@@ -605,6 +619,92 @@ describe('web panel API (Postgres)', () => {
           'agent_deleted',
         ]),
       );
+    });
+
+    it('transcripts: upload (CSRF), progress, segments, SRT, Range for the player, task from it; mailing view', async () => {
+      const s = await loginOk();
+      const wav = path.join(mediaDir, 'up.ogg');
+      execFileSync('ffmpeg', [
+        '-v',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=duration=7',
+        '-c:a',
+        'libopus',
+        wav,
+      ]);
+      const boundary = '----cmsboundary';
+      const body = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="up.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`,
+        ),
+        readFileSync(wav),
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]);
+      const headers = {
+        cookie: s.cookie,
+        origin: ORIGIN,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      };
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/transcripts/upload',
+            headers,
+            payload: body,
+          })
+        ).statusCode,
+      ).toBe(403);
+      const up = await app.inject({
+        method: 'POST',
+        url: '/api/transcripts/upload',
+        headers: { ...headers, 'x-csrf-token': s.csrf },
+        payload: body,
+      });
+      expect(up.statusCode).toBe(200);
+      const id = up.json<{ transcriptId: string }>().transcriptId;
+      await drain();
+      const list = (await get(s, '/api/transcripts')).json<
+        { id: string; status: string; progress: number }[]
+      >();
+      expect(list.find((x) => x.id === id)).toMatchObject({ status: 'done', progress: 100 });
+      const detail = (await get(s, `/api/transcripts/${id}`)).json<{
+        segments: unknown[];
+        files: string[];
+      }>();
+      expect(detail.segments.length).toBe(2);
+      expect(detail.files).toContain('subtitles.srt');
+      const srt = await get(s, `/api/transcripts/${id}/files/subtitles.srt`);
+      expect(srt.statusCode).toBe(200);
+      expect(srt.body).toMatch(/^1\n00:00:00,000 -->/);
+      expect((await get(s, `/api/transcripts/${id}/files/..%2F..%2Fsecret`)).statusCode).toBe(400);
+      const part = await app.inject({
+        method: 'GET',
+        url: `/api/transcripts/${id}/media`,
+        headers: { cookie: s.cookie, range: 'bytes=0-9' },
+      });
+      expect(part.statusCode).toBe(206);
+      expect(part.rawPayload.length).toBe(10);
+      const made = await post(s, `/api/transcripts/${id}/task`, {
+        text: 'Сделай идеи Reels по этой записи',
+      });
+      expect(made.statusCode).toBe(200);
+      expect(made.json<{ taskId: string }>().taskId).toBeTruthy();
+
+      const mailing = (await get(s, '/api/mailing')).json<{
+        provider: string;
+        audience: { eligible: number };
+      }>();
+      expect(mailing).toMatchObject({ provider: 'mock', audience: { eligible: 0 } });
+      const imp = await post(s, '/api/mailing/contacts', {
+        csv: 'email,name,consent_at,consent_source\na@example.com,А,2026-09-01,форма',
+      });
+      expect(imp.statusCode).toBe(200);
+      expect((await get(s, '/api/mailing')).body).not.toMatch(/a@example\.com/);
     });
 
     it('workspace: board, links (validated, audited, mirrored), layout, events, task path, SSE', async () => {
