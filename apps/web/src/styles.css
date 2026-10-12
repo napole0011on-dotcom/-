@@ -346,20 +346,23 @@ summary {
   color: var(--primary);
 }
 
-@media (max-width: 1280px) {
+/* Six sections: the provider chip and button labels give way first, then the menu folds. */
+@media (max-width: 1680px) {
+  .llm-chip {
+    display: none;
+  }
+}
+@media (max-width: 1440px) {
   .header-right .label-wide {
     display: none;
   }
 }
-@media (max-width: 1100px) {
-  .llm-chip {
-    display: none;
-  }
+@media (max-width: 1240px) {
   .nav a {
     padding: 7px 10px;
   }
 }
-@media (max-width: 860px) {
+@media (max-width: 1080px) {
   .nav,
   .header-right .hide-mobile {
     display: none;

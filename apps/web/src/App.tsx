@@ -59,7 +59,7 @@ function StopAllButton() {
   if (data.controls.allPaused) {
     return (
       <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
-        <Icon name="play" /> Продолжить всё
+        <Icon name="play" /> <span className="label-wide">Продолжить всё</span>
       </Button>
     );
   }
@@ -67,7 +67,7 @@ function StopAllButton() {
     <ConfirmButton
       label={
         <>
-          <Icon name="stop" /> Остановить всё
+          <Icon name="stop" /> <span className="label-wide">Остановить всё</span>
         </>
       }
       variant="danger"
