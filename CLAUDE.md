@@ -14,6 +14,7 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 | 2.5 Веб-панель, шаг 1 (просмотр, согласование, расходы) | готово   |
 | 2.5 Веб-панель, шаг 2 (управление агентами, промпты)    | готово   |
 | 2.6 Рабочий стол (доска, связи, дизайн-система)         | готово   |
+| 2.6 Конструктор агентов (реестр, тест перед включением) | готово   |
 | 3. Image (Magnific), Video Ideas, SEO, DAG              | не начат |
 | 4. Instagram Analyst (CSV → Graph API)                  | не начат |
 | 5. Панель, эксплуатация, деплой                         | не начат |
@@ -38,6 +39,7 @@ apps/web            панель: React + Vite + TanStack Query, свой роу
   src/api.ts           fetch-клиент: CSRF-токен в памяти, X-Panel-Activity, типы ответов
   src/queries.ts       опрос: 3 с (агенты, задачи, согласование), 10 с (расходы, статус); пауза на скрытой вкладке
   src/pages/*          Login, Agents, Tasks, TaskPage, Approvals, RunPage, Spend, NewTask
+  src/pages/NewAgent.tsx, AgentBuilder.tsx  конструктор: основное, поля, критерии, промпт, тест, включение
   src/components/AgentDrawer.tsx  «Настроить»: Обзор (пауза, вкл/выкл), Модель, Промпт (версии, diff), Тест
   src/diff.ts          построчный diff промптов (LCS) со сворачиванием неизменённых строк
   src/theme/tokens.css дизайн-токены (единственное место с цветами), светлая/тёмная тема; theme.ts — переключатель
@@ -50,12 +52,16 @@ apps/bot            Telegram-бот + воркер очереди + обслуж
 packages/agents     агенты и сценарий
   prompts/*.md         системные промпты (front matter version: N); ai-cliches.ru.txt — штампы
   src/agents/          ceo, copywriter, critic — вход/выход по Zod, без побочных эффектов
-  src/registry.ts      реестр агентов (имя, роль, модельная роль, промпт) — карточки панели строятся из него
+  src/registry.ts      агенты в коде (CEO, Копирайтер, Critic): имя, роль, модельная роль, промпт
+  src/agent-registry.ts  AgentRef: агенты кода + агенты из конструктора (agent_definitions); CRUD черновиков,
+                       activationProblems(), включение только после теста текущих полей и промпта
+  src/constructor.ts   агент конструктора: поля результата → Zod-схема, render, generic Critic по критериям
   src/invocations.ts   invokeAgent() — каждый вызов агента пишется в agent_invocations (версия промпта, модель, $)
   src/telegram-callbacks.ts  формат callback_data (≤ 64 байт), общий для бота и зеркала панели
   src/controls.ts      AgentControls: пауза/вкл-выкл агента, «Остановить всё», модель из прайса; makeRunGate()
   src/prompt-store.ts  промпты в БД: syncPromptFiles(), активная версия, сохранение, откат (всё в audit_log)
-  src/agent-test.ts    «Тест»: агент на примере брифа с mock-моделью, $0, черновик промпта
+  src/agent-test.ts    «Тест»: агент на примере брифа с mock-моделью, $0, черновик промпта; тест сохранённой
+                       версии агента конструктора записывается в spec.lastTest (specHash + версия промпта)
   src/graph.ts         связи как DAG: validateLink, системные связи, buildPipeline (порядок шагов), autoLayout
   src/workspace.ts     реестр узлов (agent_definitions), связи и раскладка в БД, всё через audit_log
   src/nodes.ts         контракт шага графа (NodeExecutor), артефакты node:<agent>:main
@@ -153,6 +159,11 @@ pnpm smoke:llm           # 2 реальных вызова через LLM_PROVID
   reopenPackage, cancelTask, approveBudget). Своей логики решений в API нет; actor панели — `human / panel:owner`.
 - Новый изменяющий эндпоинт панели — только POST под `/api/`: preHandler проверяет Origin, сессию и CSRF.
   Ответ — без секретов (тест `panel.int.test.ts` это проверяет).
+- Агент конструктора: id — slug (латиница), промпт в `prompt_versions` под его id, модель — `ctx.agentModels[id]`.
+  Включить можно только после прошедшего теста ТЕКУЩИХ полей и активного промпта (тест черновика не считается).
+  Изменение полей/критериев включённого агента возвращает его в черновик. Шаг агента-черновика в уже
+  утверждённом плане ждёт в очереди (`waiting_for = agent:<id>`), включение отпускает очередь.
+  Удалить можно только не включённого агента, которого нет в плане незавершённых задач.
 - `apps/web` проверяется отдельным `tsconfig.json` (DOM, bundler); в `tsconfig.typecheck.json` он исключён.
 - Цвета в панели — только токены из `apps/web/src/theme/tokens.css` (`var(--…)`, `color-mix()` от токенов).
   `pnpm lint` запускает `scripts/check-colors.mjs` и падает на `#hex`/`rgb()`/`hsl()` в других файлах.
