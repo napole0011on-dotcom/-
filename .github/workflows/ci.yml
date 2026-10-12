@@ -35,6 +35,8 @@ jobs:
       - run: pnpm db:migrate
       - run: pnpm db:rollback
       - run: pnpm db:migrate
+      # The media pipeline runs real ffmpeg/ffprobe in integration tests (STT is mocked).
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: pnpm test:integration
       - run: pnpm build
 

@@ -98,3 +98,48 @@ export interface ObjectStorage {
   /** Throws if the storage is not reachable/writable. Used by /health. */
   healthCheck(): Promise<void>;
 }
+
+export interface SttSegment {
+  /** Seconds from the start of the audio. */
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface SttResult {
+  text: string;
+  segments: SttSegment[];
+  language: string;
+  durationSec: number;
+  /** 0..1 when the engine reports it. */
+  confidence: number | null;
+  provider: string;
+  model: string;
+}
+
+/** Speech to text. Input: 16 kHz mono WAV (the media pipeline converts everything to it). */
+export interface SttProvider {
+  readonly name: string;
+  /** USD per audio minute (0 for mock and local engines). */
+  readonly pricePerMinuteUsd: number;
+  transcribe(
+    wav: { path: string; durationSec: number },
+    opts: { language?: string; signal?: AbortSignal },
+  ): Promise<SttResult>;
+}
+
+export interface MailMessage {
+  to: string;
+  from: string;
+  subject: string;
+  text: string;
+  html: string;
+  /** Extra headers (List-Unsubscribe, List-Unsubscribe-Post). */
+  headers: Record<string, string>;
+}
+
+/** Sends one email. Real senders are enabled only after the owner's explicit "ok". */
+export interface MailSender {
+  readonly name: string;
+  send(msg: MailMessage): Promise<{ messageId: string }>;
+}

@@ -127,6 +127,35 @@ const envSchema = z
 
     BRAND_PROFILE_FILE: z.string().min(1).default('config/brands/default.yaml'),
     EXPORT_DIR: z.string().min(1).default('data/exports'),
+
+    // --- Voice / video -> text (tool steps). mock = no engine, deterministic text.
+    // local = whisper.cpp (whisper-cli) on this computer, $0. cloud = not implemented yet.
+    STT_PROVIDER: z.enum(['mock', 'local', 'cloud']).default('mock'),
+    STT_LANGUAGE: z.string().min(2).max(8).default('ru'),
+    WHISPER_CPP_BIN: z.string().min(1).default('whisper-cli'),
+    WHISPER_CPP_MODEL: z.string().min(1).optional(),
+    FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
+    FFPROBE_PATH: z.string().min(1).default('ffprobe'),
+    VOICE_MAX_MB: positiveInt.max(2000).default(20),
+    VOICE_MAX_SECONDS: positiveInt.default(900),
+    VIDEO_MAX_MB: positiveInt.max(4000).default(300),
+    VIDEO_MAX_SECONDS: positiveInt.default(7200),
+    STT_CHUNK_SECONDS: positiveInt.min(30).max(1800).default(300),
+    MEDIA_RETENTION_DAYS: positiveInt.default(30),
+    MEDIA_TMP_DIR: z.string().min(1).default('data/tmp'),
+
+    // --- Commercial proposals: prices come only from this catalog; totals are computed by code.
+    KP_CATALOG_FILE: z.string().min(1).default('config/pricing/services.yaml'),
+    KP_VAT_PERCENT: z.coerce.number().min(0).max(50).default(0),
+
+    // --- Mailing. mock = nothing leaves the computer. smtp = not enabled until the owner's "ok".
+    MAIL_PROVIDER: z.enum(['mock', 'smtp']).default('mock'),
+    MAIL_FROM: z.string().min(3).optional(),
+    MAIL_TEST_TO: z.email().optional(),
+    MAIL_UNSUBSCRIBE_URL: z.url().optional(),
+    MAIL_BATCH_SIZE: positiveInt.max(500).default(20),
+    MAIL_BATCH_PAUSE_SECONDS: z.coerce.number().int().min(0).max(3600).default(10),
+    MAIL_MAX_PER_DAY: positiveInt.default(500),
   })
   .superRefine((env, ctx) => {
     if (env.STORAGE_DRIVER === 's3') {
@@ -185,6 +214,32 @@ export type StorageConfig =
       forcePathStyle: boolean;
     };
 
+export interface MediaConfig {
+  sttProvider: 'mock' | 'local' | 'cloud';
+  language: string;
+  whisperBin: string;
+  whisperModel: string | undefined;
+  ffmpeg: string;
+  ffprobe: string;
+  voiceMaxBytes: number;
+  voiceMaxSeconds: number;
+  videoMaxBytes: number;
+  videoMaxSeconds: number;
+  chunkSeconds: number;
+  retentionDays: number;
+  tmpDir: string;
+}
+
+export interface MailConfig {
+  provider: 'mock' | 'smtp';
+  from: string | undefined;
+  testTo: string | undefined;
+  unsubscribeUrl: string | undefined;
+  batchSize: number;
+  batchPauseSeconds: number;
+  maxPerDay: number;
+}
+
 export interface AppConfig {
   nodeEnv: Env['NODE_ENV'];
   logLevel: Env['LOG_LEVEL'];
@@ -205,6 +260,9 @@ export interface AppConfig {
   panel: PanelConfig;
   brandProfileFile: string;
   exportDir: string;
+  media: MediaConfig;
+  kp: { catalogFile: string; vatPercent: number };
+  mail: MailConfig;
 }
 
 export interface PanelConfig {
@@ -356,6 +414,31 @@ export function loadConfig(
     },
     brandProfileFile: path.resolve(rootDir, e.BRAND_PROFILE_FILE),
     exportDir: path.resolve(rootDir, e.EXPORT_DIR),
+    media: {
+      sttProvider: e.STT_PROVIDER,
+      language: e.STT_LANGUAGE,
+      whisperBin: e.WHISPER_CPP_BIN,
+      whisperModel: e.WHISPER_CPP_MODEL ? path.resolve(rootDir, e.WHISPER_CPP_MODEL) : undefined,
+      ffmpeg: e.FFMPEG_PATH,
+      ffprobe: e.FFPROBE_PATH,
+      voiceMaxBytes: e.VOICE_MAX_MB * 1024 * 1024,
+      voiceMaxSeconds: e.VOICE_MAX_SECONDS,
+      videoMaxBytes: e.VIDEO_MAX_MB * 1024 * 1024,
+      videoMaxSeconds: e.VIDEO_MAX_SECONDS,
+      chunkSeconds: e.STT_CHUNK_SECONDS,
+      retentionDays: e.MEDIA_RETENTION_DAYS,
+      tmpDir: path.resolve(rootDir, e.MEDIA_TMP_DIR),
+    },
+    kp: { catalogFile: path.resolve(rootDir, e.KP_CATALOG_FILE), vatPercent: e.KP_VAT_PERCENT },
+    mail: {
+      provider: e.MAIL_PROVIDER,
+      from: e.MAIL_FROM,
+      testTo: e.MAIL_TEST_TO,
+      unsubscribeUrl: e.MAIL_UNSUBSCRIBE_URL,
+      batchSize: e.MAIL_BATCH_SIZE,
+      batchPauseSeconds: e.MAIL_BATCH_PAUSE_SECONDS,
+      maxPerDay: e.MAIL_MAX_PER_DAY,
+    },
   };
 }
 
@@ -400,6 +483,14 @@ export function describeConfig(config: AppConfig): Record<string, unknown> {
     },
     brandProfileFile: config.brandProfileFile,
     exportDir: config.exportDir,
+    media: config.media,
+    kp: config.kp,
+    // Addresses are personal data: only whether they are set.
+    mail: {
+      ...config.mail,
+      from: config.mail.from ? '***set***' : '***missing***',
+      testTo: config.mail.testTo ? '***set***' : '***missing***',
+    },
     panel: {
       ...config.panel,
       passwordHash: config.panel.passwordHash ? '***set***' : '***missing***',

@@ -7,3 +7,6 @@ export * from './mock/notifier.js';
 export * from './storage/local.js';
 export * from './storage/s3.js';
 export { assertSafeKey } from './storage/keys.js';
+export * from './stt/mock.js';
+export * from './stt/whispercpp.js';
+export * from './mail/mock.js';

@@ -24,6 +24,10 @@ describe('loadConfig', () => {
     expect(c.dryRun).toBe(true);
     expect(c.publishEnabled).toBe(false);
     expect(c.imageMaxCostUsd).toBe(0.1);
+    expect(c.media.sttProvider).toBe('mock');
+    expect(c.media.voiceMaxBytes).toBe(20 * 1024 * 1024);
+    expect(c.mail.provider).toBe('mock');
+    expect(c.kp.vatPercent).toBe(0);
     expect(c.storage.driver).toBe('local');
     expect(c.db.port).toBe(5432);
   });

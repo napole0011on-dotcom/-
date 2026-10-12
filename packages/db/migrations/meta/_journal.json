@@ -50,6 +50,13 @@
       "when": 1791835846875,
       "tag": "0006_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791840524860,
+      "tag": "0007_media_mail",
+      "breakpoints": true
     }
   ]
 }

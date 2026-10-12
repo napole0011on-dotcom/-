@@ -112,7 +112,7 @@ export interface ReserveInput {
   taskId: string | null;
   runId: string | null;
   agent: string;
-  kind: 'llm' | 'image';
+  kind: 'llm' | 'image' | 'stt' | 'email';
   provider: string;
   model: string;
   estimateUsd: number;

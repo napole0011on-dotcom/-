@@ -89,6 +89,8 @@ export const runs = pgTable(
     promptVersion: text('prompt_version'),
     /** Set while the run waits in the queue for a paused/disabled agent, e.g. "agent:copywriter" or "all". */
     waitingFor: text('waiting_for'),
+    /** 0..100 for long tool steps (video transcription); null = not reported. */
+    progress: integer('progress'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
@@ -510,4 +512,147 @@ export const agentEvents = pgTable(
     costUsd: usd('cost_usd'),
   },
   (t) => [index('agent_events_brand_id_idx').on(t.brandId, t.id)],
+);
+
+/** Uploaded audio/video (Telegram voice, panel upload). The file itself lives in object storage. */
+export const mediaFiles = pgTable(
+  'media_files',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    /** voice | video */
+    kind: text('kind').notNull(),
+    /** telegram | panel */
+    source: text('source').notNull(),
+    originalName: text('original_name').notNull(),
+    storageKey: text('storage_key').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    durationSec: numeric('duration_sec', { precision: 10, scale: 2 }),
+    /** The media file is deleted from storage after this moment (transcripts stay). */
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('media_files_brand_idx').on(t.brandId, t.createdAt)],
+);
+
+/** Result of a voice/video transcription; chunks are appended as they finish (no lost work). */
+export const transcripts = pgTable(
+  'transcripts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => mediaFiles.id),
+    taskId: uuid('task_id').references(() => tasks.id),
+    /** queued | running | done | failed | cancelled */
+    status: text('status').notNull().default('queued'),
+    provider: text('provider'),
+    model: text('model'),
+    language: text('language'),
+    durationSec: numeric('duration_sec', { precision: 10, scale: 2 }),
+    /** Raw recognised text and its segments [{start, end, text}]. */
+    text: text('text').notNull().default(''),
+    segments: jsonb('segments').notNull().default([]),
+    chunksDone: integer('chunks_done').notNull().default(0),
+    chunksTotal: integer('chunks_total'),
+    /** Storage keys of transcript.txt / subtitles.srt / subtitles.vtt / transcript.json. */
+    files: jsonb('files').notNull().default([]),
+    error: text('error'),
+    /** Telegram chat that waits for the result (voice messages). */
+    notifyChatId: text('notify_chat_id'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('transcripts_brand_idx').on(t.brandId, t.createdAt)],
+);
+
+/** Mailing contacts. Sending is allowed only with a stored consent (date + source). */
+export const contacts = pgTable(
+  'contacts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    email: text('email').notNull(),
+    /** Merge fields: {name: "Анна", ...}. */
+    fields: jsonb('fields').notNull().default({}),
+    consentAt: timestamp('consent_at', { withTimezone: true }),
+    consentSource: text('consent_source'),
+    unsubscribedAt: timestamp('unsubscribed_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('contacts_brand_email_uq').on(t.brandId, t.email)],
+);
+
+/** Never send to these (unsubscribed, complaint, bounce). Only the hash of the address is kept. */
+export const suppressions = pgTable(
+  'suppressions',
+  {
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    emailHash: text('email_hash').notNull(),
+    /** unsubscribe | complaint | bounce | manual */
+    reason: text('reason').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.brandId, t.emailHash] })],
+);
+
+export const campaigns = pgTable('campaigns', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  brandId: uuid('brand_id')
+    .notNull()
+    .references(() => brands.id),
+  /** The approved mailer_draft artifact the letter comes from. */
+  artifactId: uuid('artifact_id')
+    .notNull()
+    .references(() => artifacts.id),
+  title: text('title').notNull(),
+  subject: text('subject').notNull(),
+  bodyText: text('body_text').notNull(),
+  bodyHtml: text('body_html').notNull(),
+  /** draft | tested | confirmed | sending | stopping | stopped | done */
+  status: text('status').notNull().default('draft'),
+  testSentAt: timestamp('test_sent_at', { withTimezone: true }),
+  /** Recipients at confirmation and the hash of their list (no addresses in logs). */
+  recipients: integer('recipients'),
+  listHash: text('list_hash'),
+  confirmedBy: text('confirmed_by'),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  createdBy: text('created_by').notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/** One row per (campaign, contact): the idempotency of a send. */
+export const campaignSends = pgTable(
+  'campaign_sends',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    campaignId: uuid('campaign_id')
+      .notNull()
+      .references(() => campaigns.id),
+    contactId: uuid('contact_id')
+      .notNull()
+      .references(() => contacts.id),
+    /** queued | sent | failed | stopped | suppressed */
+    status: text('status').notNull().default('queued'),
+    providerMessageId: text('provider_message_id'),
+    error: text('error'),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('campaign_sends_uq').on(t.campaignId, t.contactId)],
 );
