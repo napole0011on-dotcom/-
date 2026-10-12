@@ -91,6 +91,7 @@ function seedNodes(): Seed[] {
       modelRole: 'worker',
     },
     code('image', 'pink', 'И'),
+    code('kp', 'amber', 'П'),
     ...TOOLS.map((t): Seed => ({
       id: t.id,
       name: t.name,

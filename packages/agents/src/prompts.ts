@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const AGENT_NAMES = ['ceo', 'copywriter', 'critic', 'image'] as const;
+export const AGENT_NAMES = ['ceo', 'copywriter', 'critic', 'image', 'kp'] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 
 /** Prompts of one run: the code agents always, registry agents when they have an active version. */

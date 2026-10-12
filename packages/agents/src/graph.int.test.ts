@@ -222,6 +222,7 @@ describe('board links drive execution (Postgres)', () => {
       'critic',
       'seo',
       'image',
+      'kp',
       'stt_voice',
       'video_transcribe',
       'kp_render',

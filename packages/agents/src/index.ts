@@ -29,3 +29,6 @@ export * from './presets.js';
 export * from './tools/media.js';
 export * from './tools/subtitles.js';
 export * from './tools/registry.js';
+export * from './agents/kp.js';
+export * from './tools/catalog.js';
+export * from './tools/kp-render.js';

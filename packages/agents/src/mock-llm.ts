@@ -19,6 +19,7 @@ export class MockLlmTransport implements LlmTransport {
     else if (title === 'CopywriterOutput') body = mockCopy(prompt);
     else if (title === 'CriticOutput') body = mockCritic(prompt);
     else if (title === 'ImageBriefs') body = mockImages(prompt);
+    else if (title === 'KpDraft') body = mockKp(prompt);
     else body = schema ? mockFromSchema(schema) : {};
     return Promise.resolve({
       id: `mock_${this.calls}`,
@@ -136,6 +137,31 @@ export function mockFromSchema(
       return text.length >= minLength ? text : text.padEnd(minLength, '.');
     }
   }
+}
+
+/** A KP that picks the first catalog positions (ids read from the catalog block of the prompt). */
+function mockKp(prompt: string) {
+  const block = prompt.split('Справочник услуг')[1]?.split('Библиотека кейсов')[0] ?? '';
+  const ids = [...block.matchAll(/"id":\s*"([a-z0-9][a-z0-9_-]*)"/g)].map((m) => m[1]!);
+  return {
+    client: '[MOCK] Кофейня «Зерно»',
+    intro:
+      '[MOCK] Поняли задачу: нужен регулярный контент и понятный план. Предлагаем начать с плана и сценариев.',
+    scope: ids.slice(0, 3).map((id, i) => ({
+      item_id: id,
+      qty: i === 1 ? 2 : 1,
+      comment: '[MOCK] под задачу клиента',
+    })),
+    timeline: [
+      { stage: 'План и согласование', duration: '3 дня' },
+      { stage: 'Производство', duration: '2 недели' },
+    ],
+    assumptions: ['[MOCK] Материалы и доступы клиент даёт в первый день'],
+    terms: '[MOCK] Оплата по этапам, порядок — по договору.',
+    next_step: '[MOCK] Созвон на 30 минут, чтобы уточнить объём.',
+    cases_used: [],
+    warnings: [],
+  };
 }
 
 /** Image briefs for the deliverables listed in the prompt (with the aspect the agent suggests). */

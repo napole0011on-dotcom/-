@@ -65,6 +65,9 @@ declare module 'fastify' {
 const ACTOR: Actor = { kind: 'human', id: 'panel:owner' };
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const uuid = z.uuid();
+/** Result files the panel may serve: images, KP documents. */
+const SERVABLE =
+  /^(image\/(png|jpeg|webp)|application\/pdf|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document)$/;
 
 const safeEqual = (a: string, b: string) => {
   const x = Buffer.from(a);
@@ -512,9 +515,16 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
         .where(sql`${schema.artifacts.id} = ${req.params.id}`);
       const f = (a?.content as { files?: { key: string; mimeType: string }[] } | undefined)
         ?.files?.[Number(req.params.n)];
-      if (!f || !/^image\/(png|jpeg|webp)$/.test(f.mimeType))
+      if (!f || !SERVABLE.test(f.mimeType))
         return reply.code(404).send({ error: 'Файл не найден' });
       const body = await d.storage.get(f.key);
+      const name = (f as { name?: string }).name ?? 'file';
+      // Images open inline; documents are downloads (never rendered by the browser).
+      if (!f.mimeType.startsWith('image/'))
+        reply.header(
+          'Content-Disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+        );
       return reply
         .header('Content-Type', f.mimeType)
         .header('Cache-Control', 'private, max-age=3600')

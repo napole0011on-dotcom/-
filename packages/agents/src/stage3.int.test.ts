@@ -160,4 +160,83 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
     expect(files.length).toBe(img.files.length);
     expect(existsSync(path.join(exportDir, 'image', files[0]!))).toBe(true);
   });
+
+  it('КП: positions from the catalog, total by code, DOCX and PDF built by the tool step', async () => {
+    const { brand } = await upsertBrand(t.db, BrandProfile.parse({ slug: 'kp', name: 'Зерно' }));
+    const channel = new RecordingChannel();
+    const queue: string[] = [];
+    const config = {
+      ...t.config,
+      exportDir: path.join(dir, 'exports-kp'),
+      budget: budgetCtx().config,
+      timezone: 'Europe/Moscow',
+      llm: llmConfig(),
+      kp: { catalogFile: path.resolve('config/pricing/services.yaml'), vatPercent: 20 },
+    };
+    const storage = new LocalFsStorage(path.join(dir, 'storage-kp'));
+    const llm = new LlmClient({
+      db: t.db,
+      transport: new MockLlmTransport(),
+      pricing: pricing(),
+      config: llmConfig(),
+      budget: budgetCtx(),
+      notifier: channel,
+      logger: silentLogger,
+    });
+    const wf = new Workflow({
+      db: t.db,
+      llm,
+      channel,
+      enqueue: (id) => Promise.resolve(queue.push(id)),
+      config,
+      pricing: pricing(),
+      logger: silentLogger,
+      storage,
+      executors: codeExecutors({ db: t.db, config, image: new MockImageProvider(), storage }),
+    });
+    const deps = {
+      db: t.db,
+      notifier: channel,
+      logger: silentLogger,
+      staleAfterSeconds: 60,
+      gate: wf.gate,
+    };
+    const drain = async () => {
+      while (queue.length)
+        await processRun(deps, queue.shift()!, wf.handleRun, new AbortController().signal);
+    };
+    await loadWorkspace(t.db, brand.id);
+    for (const [a, b] of [
+      ['ceo', 'kp'],
+      ['kp', 'critic'],
+      ['kp', 'kp_render'],
+    ] as const)
+      expect((await addLink(t.db, brand.id, a, b, OWNER)).ok).toBe(true);
+    const { taskId } = await wf.submitBrief(
+      brand.id,
+      'КП для кофейни «Зерно»: ведение соцсетей на месяц',
+      OWNER,
+    );
+    await drain();
+    expect(channel.plans[0]!.pipeline.steps.map((x) => x.agent)).toEqual(
+      expect.arrayContaining(['kp', 'kp_render']),
+    );
+    await wf.decidePlan(taskId, 'approve', OWNER);
+    await drain();
+    const pkg = channel.packages.at(-1)!;
+    const kp = pkg.nodeItems.find((n) => n.agent === 'kp')!;
+    expect(kp.critic).not.toBeNull();
+    // Mock picks the first catalog lines: smm-month ×1 (60 000) + content-plan ×2 (30 000)
+    // + reels-script ×1 (3 000) = 93 000, +20% VAT = 111 600.
+    expect(kp.title).toBe('КП для [MOCK] Кофейня «Зерно»: 111\u00a0600\u00a0₽');
+    const docs = pkg.nodeItems.find((n) => n.agent === 'kp_render')!;
+    expect(docs.files.map((f) => f.name)).toEqual(['kp.docx', 'kp.pdf']);
+    const [art] = await t.db
+      .select({ content: schema.artifacts.content })
+      .from(schema.artifacts)
+      .where(sql`${schema.artifacts.id} = ${docs.artifactId}`);
+    const files = (art!.content as { files: { key: string }[] }).files;
+    expect((await storage.get(files[0]!.key)).subarray(0, 2).toString()).toBe('PK');
+    expect((await storage.get(files[1]!.key)).subarray(0, 5).toString()).toBe('%PDF-');
+  });
 });

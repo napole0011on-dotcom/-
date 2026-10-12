@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, type ItemView, type NodeItem, type Plan, type PlanEstimate } from '../api';
 import { CHECK_LABEL, PLATFORM_LABEL, usd } from '../format';
+import { Icon } from '../icons';
 import { Button, ConfirmButton, Pill, useAction } from '../ui';
 
 export function PlanView({ plan, estimate }: { plan: Plan; estimate?: PlanEstimate }) {
@@ -295,6 +296,10 @@ export function NodeItemView({ item }: { item: NodeItem }) {
       {item.ownerComment && (
         <div className="owner-comment small">Ваш комментарий учтён: «{item.ownerComment}»</div>
       )}
+      {item.agent === 'kp' && item.title.includes(': ') && (
+        // КП: the total (computed by code from the catalog) comes first, large.
+        <div className="big-number tabular">{item.title.split(': ').pop()}</div>
+      )}
       {item.files.some((f) => f.mimeType.startsWith('image/')) && (
         <div className="node-images">
           {item.files.map((f, i) =>
@@ -313,6 +318,22 @@ export function NodeItemView({ item }: { item: NodeItem }) {
                 />
               </a>
             ) : null,
+          )}
+        </div>
+      )}
+      {item.files.some((f) => !f.mimeType.startsWith('image/')) && (
+        <div className="row wrap">
+          {item.files.map((f, i) =>
+            f.mimeType.startsWith('image/') ? null : (
+              <a
+                key={i}
+                className="btn btn-sm"
+                href={`/api/artifacts/${item.artifactId}/files/${i}`}
+                download={f.name}
+              >
+                <Icon name="spark" /> Скачать {f.name.split('.').pop()?.toUpperCase()}
+              </a>
+            ),
           )}
         </div>
       )}

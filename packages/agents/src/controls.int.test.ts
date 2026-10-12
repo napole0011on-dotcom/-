@@ -288,7 +288,14 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
 
     // A changed prompt file is added as a version but NOT activated.
     const dir = mkdtempSync(path.join(tmpdir(), 'prompts-'));
-    for (const f of ['ceo.md', 'copywriter.md', 'critic.md', 'image.md', 'ai-cliches.ru.txt'])
+    for (const f of [
+      'ceo.md',
+      'copywriter.md',
+      'critic.md',
+      'image.md',
+      'kp.md',
+      'ai-cliches.ru.txt',
+    ])
       writeFileSync(path.join(dir, f), readFileSync(path.join(PROMPTS_DIR, f)));
     writeFileSync(
       path.join(dir, 'ceo.md'),

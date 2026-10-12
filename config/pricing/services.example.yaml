@@ -1,0 +1,48 @@
+# Справочник услуг и цен для КП. Скопируйте в config/pricing/services.yaml и заполните своими данными.
+# Цены в КП берутся ТОЛЬКО отсюда: модель выбирает позиции по id, суммы и НДС считает код.
+# price: null — «цена по запросу» (позиция попадёт в КП с отметкой для вас).
+currency: RUB
+example: true # уберите эту строку в своём файле: в КП появится пометка «пример справочника»
+items:
+  - id: smm-month
+    name: Ведение Instagram и Telegram (месяц)
+    unit: мес
+    price: 60000
+  - id: content-plan
+    name: Контент-план на месяц
+    unit: шт
+    price: 15000
+  - id: reels-script
+    name: Сценарий Reels
+    unit: шт
+    price: 3000
+  - id: reels-shoot
+    name: Съёмка Reels (выезд до 3 часов)
+    unit: выезд
+    price: 20000
+  - id: copy-post
+    name: Текст поста
+    unit: шт
+    price: 1500
+  - id: design-post
+    name: Дизайн поста или обложки
+    unit: шт
+    price: 2000
+  - id: audit
+    name: Аудит аккаунта
+    unit: шт
+    price: 10000
+  - id: ads-setup
+    name: Настройка таргетированной рекламы
+    unit: шт
+    price: null
+# Ваши реквизиты для шапки КП
+requisites:
+  company: ООО «Пример»
+  details: ИНН 0000000000, ОГРН 0000000000000
+  contact: hello@example.com
+# Кейсы, на которые агент может ссылаться (только ваши; агент не придумывает свои)
+cases:
+  - id: coffee-2025
+    title: Кофейня «Зерно»
+    text: Пример кейса — замените своим.

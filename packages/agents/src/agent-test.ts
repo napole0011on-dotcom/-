@@ -9,6 +9,7 @@ import { getBrand } from './brand.js';
 import type { AgentControls } from './controls.js';
 import { MockImageProvider, type ObjectStorage } from '@cms/providers';
 import { imageExecutor } from './agents/image.js';
+import { kpExecutor } from './agents/kp.js';
 import { MockLlmTransport } from './mock-llm.js';
 import {
   normalizePromptText,
@@ -35,6 +36,8 @@ export const TEST_TASK_KIND = 'agent_test';
 
 const SAMPLE_BRIEF =
   'Тестовый запуск: пост для Instagram и пост для Telegram про осеннее меню кофейни';
+const SAMPLE_KP_BRIEF =
+  'Кофейня «Зерно» хочет вести Instagram и Telegram: контент-план на месяц, 8 постов и 2 Reels.';
 const SAMPLE_DELIVERABLES: Deliverable[] = [
   {
     id: 'post-1',
@@ -233,6 +236,25 @@ export async function runAgentTest(
         storage: memoryStorage(),
         budget: { config: d.config.budget, timeZone: d.config.timezone },
         estimateUsd: 0,
+      });
+      output = (await exec.run(ctx, nodeInput)).output;
+      render = exec.render(output);
+      review = (await exec.review!(ctx, nodeInput, output)).output;
+    } else if (ref.id === 'kp') {
+      input = { brief: SAMPLE_KP_BRIEF, catalog: d.config.kp.catalogFile };
+      const nodeInput: NodeInput = {
+        brief: SAMPLE_KP_BRIEF,
+        plan: SAMPLE_PLAN,
+        upstream: [],
+        previous: null,
+        ownerComment: null,
+        criticIssues: [],
+        mode: 'first',
+        step: 'test',
+      };
+      const exec = kpExecutor({
+        catalogFile: d.config.kp.catalogFile,
+        vatPercent: d.config.kp.vatPercent,
       });
       output = (await exec.run(ctx, nodeInput)).output;
       render = exec.render(output);

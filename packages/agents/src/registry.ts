@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { LlmConfig } from '@cms/core';
 import type { AgentName } from './prompts.js';
 import { ImageBriefs } from './agents/image.js';
+import { KpDraft } from './agents/kp.js';
 import { CeoPlan, Review } from './schemas.js';
 
 export type ModelRole = keyof LlmConfig['models'];
@@ -69,6 +70,16 @@ export const AGENTS: readonly AgentDefinition[] = [
     modelRole: 'worker',
     prompt: 'image',
     output: ImageBriefs,
+  },
+  {
+    id: 'kp',
+    name: 'КП',
+    role: 'Коммерческие предложения по справочнику цен',
+    description:
+      'Текст КП и состав работ из справочника. Цены, итог и НДС считает программа, а не модель. Документ собирает «КП → DOCX/PDF».',
+    modelRole: 'worker',
+    prompt: 'kp',
+    output: KpDraft,
   },
 ];
 
