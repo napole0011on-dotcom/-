@@ -133,6 +133,16 @@ async function main() {
         ],
         [{ text: '✖️ Отменить задачу', data: cb.task('no', taskId) }],
       ],
+      provider: {
+        recheckSeconds: config.llm.breaker.cooldownSeconds,
+        waitMaxMinutes: config.llm.providerWaitMaxMinutes,
+      },
+      providerPauseButtons: (taskId) => [
+        [
+          { text: '▶️ Продолжить', data: cb.task('rs', taskId) },
+          { text: '✖️ Отменить задачу', data: cb.task('no', taskId) },
+        ],
+      ],
     },
   });
   queueRef.q = queue;

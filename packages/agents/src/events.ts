@@ -12,6 +12,8 @@ export type EventKind =
   | 'waiting_owner'
   | 'decision'
   | 'exported'
+  | 'retry'
+  | 'wait'
   | 'info';
 
 export interface AgentEvent {

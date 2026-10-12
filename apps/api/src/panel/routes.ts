@@ -357,6 +357,17 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   }
   const brand = () => d.brandId();
 
+  /** One tiny request to the LLM provider; the answer (or the error) is shown as is. */
+  app.post('/api/provider/check', async (_req, reply) => {
+    const r = await d.workflow.checkProvider(brand());
+    return reply.code(200).send({ ok: r.ok, message: r.message, latencyMs: r.latencyMs });
+  });
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/resume', async (req, reply) => {
+    if (!uuid.safeParse(req.params.id).success)
+      return reply.code(400).send({ ok: false, message: 'Неверный id' });
+    return control(reply, () => d.workflow.resumeAfterProvider(req.params.id, ACTOR));
+  });
+
   app.post('/api/controls/stop-all', (_req, reply) =>
     control(reply, () => d.controls.setAllPaused(brand(), true, ACTOR)),
   );

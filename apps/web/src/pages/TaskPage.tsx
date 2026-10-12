@@ -37,6 +37,7 @@ export function TaskPage({ id }: { id: string }) {
   const reopen = useAction(() => api.post(`/api/tasks/${id}/reopen`));
   const cancel = useAction(() => api.post(`/api/tasks/${id}/cancel`));
   const budget = useAction((extraUsd: 1 | 5) => api.post(`/api/tasks/${id}/budget`, { extraUsd }));
+  const resume = useAction(() => api.post(`/api/tasks/${id}/resume`));
   if (isLoading) return <Loading />;
   if (!data) return <ErrorBox error={error} />;
   const { task, actions } = data;
@@ -64,14 +65,33 @@ export function TaskPage({ id }: { id: string }) {
 
       {task.waitingFor && (
         <div className="card warn-card">
-          ⏳ Ждёт агента: <b>{task.waitingFor}</b>. Запуск стоит в очереди и продолжится
-          автоматически, когда агента снимут с паузы (раздел «Агенты»).
+          {task.waitingFor.startsWith('ждёт провайдера') ? (
+            <>
+              ⏳ <b>{task.waitingFor}</b>. Задача не упала: запуск ждёт в очереди и продолжится сам,
+              когда провайдер ответит. Состояние — на чипе провайдера в шапке.
+            </>
+          ) : (
+            <>
+              ⏳ Ждёт агента: <b>{task.waitingFor}</b>. Запуск стоит в очереди и продолжится
+              автоматически, когда агента снимут с паузы (раздел «Агенты»).
+            </>
+          )}
         </div>
       )}
 
       {task.paused && (
         <div className="card warn-card">
-          ⏸ Задача на паузе: {task.pauseReason}
+          ⏸ Задача на паузе:{' '}
+          {task.pauseReason === 'provider_unavailable'
+            ? 'провайдер LLM был недоступен слишком долго'
+            : task.pauseReason}
+          {task.pauseReason === 'provider_unavailable' && (
+            <div className="row">
+              <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
+                ▶️ Продолжить с этого шага
+              </Button>
+            </div>
+          )}
           {budgetPaused && (
             <div className="row">
               <Button variant="primary" busy={budget.isPending} onClick={() => budget.mutate(1)}>

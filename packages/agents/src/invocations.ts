@@ -1,4 +1,5 @@
-import { errorToJson } from '@cms/core';
+import { AppError, errorToJson } from '@cms/core';
+import { ProviderUnavailableError } from '@cms/engine';
 import { schema, sql, type DbOrTx } from '@cms/db';
 import type { AgentResult } from './agents/context.js';
 import { emitEvent } from './events.js';
@@ -67,10 +68,26 @@ export async function invokeAgent<T>(
         finishedAt: sql`now()`,
       })
       .where(sql`${agentInvocations.id} = ${row!.id}`);
+    if (err instanceof ProviderUnavailableError) {
+      // Not a failure of the agent: the run waits in the queue and continues by itself.
+      const last = err.details.lastError as { message?: string } | null;
+      await emitEvent(db, {
+        ...ev,
+        kind: 'wait',
+        text: `${def.name} · ⏳ ждёт провайдера: ${last?.message ?? err.message}, повтор через ${String(err.details.retryInSeconds)} с`,
+      });
+      throw err;
+    }
+    const human =
+      err instanceof AppError && typeof err.details.userMessage === 'string'
+        ? err.details.userMessage
+        : err instanceof Error
+          ? err.message
+          : 'неизвестная ошибка';
     await emitEvent(db, {
       ...ev,
       kind: 'failed',
-      text: `${def.name} · ошибка: ${(err instanceof Error ? err.message : 'неизвестная ошибка').slice(0, 120)}`,
+      text: `${def.name} · ошибка: ${human.slice(0, 160)}`,
     });
     throw err;
   }

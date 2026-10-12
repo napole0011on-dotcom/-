@@ -26,6 +26,7 @@ export interface BotActions {
   rejectPackage(taskId: string, actor: Actor): Promise<DecisionResult>;
   reopenPackage(taskId: string, actor: Actor): Promise<DecisionResult>;
   approveBudget(taskId: string, extraUsd: number, actor: Actor): Promise<DecisionResult>;
+  resumeAfterProvider(taskId: string, actor: Actor): Promise<DecisionResult>;
   brandInfo(): Promise<string>;
   reloadBrand(): Promise<string>;
   listTasks(): Promise<string>;
@@ -151,7 +152,9 @@ export function createBot(
               ? await actions.rejectPackage(c.taskId, actor)
               : c.action === 'reopen'
                 ? await actions.reopenPackage(c.taskId, actor)
-                : await actions.cancelTask(c.taskId, actor);
+                : c.action === 'resume'
+                  ? await actions.resumeAfterProvider(c.taskId, actor)
+                  : await actions.cancelTask(c.taskId, actor);
       } else if (c.type === 'transcript') {
         result =
           c.action === 'task'

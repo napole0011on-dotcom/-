@@ -7,7 +7,13 @@ import {
 } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
 import { toolInfo } from './media-routes.js';
-import { budgetStatus, finalDecisions, latestArtifacts, type BudgetContext } from '@cms/engine';
+import {
+  PROVIDER_LABEL,
+  budgetStatus,
+  finalDecisions,
+  latestArtifacts,
+  type BudgetContext,
+} from '@cms/engine';
 import {
   CeoPlan,
   TEST_TASK_KIND,
@@ -67,6 +73,8 @@ async function heldRuns(db: Db) {
 /** "agent:copywriter" -> "Копирайтер", "all" -> "все агенты остановлены". */
 export function waitingLabel(waitingFor: string, names: Record<string, string> = {}): string {
   if (waitingFor === 'all') return 'все агенты остановлены';
+  if (waitingFor.startsWith('provider:'))
+    return `ждёт провайдера: ${PROVIDER_LABEL[waitingFor.slice(9)] ?? waitingFor.slice(9)}`;
   const id = waitingFor.replace(/^agent:/, '');
   return names[id] ?? id;
 }
@@ -87,8 +95,25 @@ export async function llmStatus(d: QueryDeps) {
   const effective = await d.controls.effectiveModels(d.brandId());
   const models = Object.values(effective);
   const controls = await getControlState(d.db, d.brandId());
+  const [h] = await d.db
+    .select()
+    .from(schema.providerStatus)
+    .where(sql`${schema.providerStatus.provider} = ${llm.provider}`);
+  const retryIn =
+    h?.state === 'down' && h.openUntil
+      ? Math.max(0, Math.ceil((h.openUntil.getTime() - Date.now()) / 1000))
+      : null;
   return {
     provider: llm.provider,
+    // Circuit breaker state written by the worker: ok | degraded | down.
+    health: {
+      state: llm.provider === 'mock' ? 'ok' : (h?.state ?? 'ok'),
+      retryInSeconds: retryIn,
+      consecutiveFailures: h?.consecutiveFailures ?? 0,
+      lastError: (h?.lastError as Record<string, unknown> | null) ?? null,
+      lastErrorAt: h?.lastErrorAt ?? null,
+      lastOkAt: h?.lastOkAt ?? null,
+    },
     gatewayHost: llm.baseUrl ? new URL(llm.baseUrl).host : null,
     structuredOutputs: llm.structuredOutputs,
     rateLimit: llm.rateLimit,

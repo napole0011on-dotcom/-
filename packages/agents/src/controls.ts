@@ -1,6 +1,7 @@
 import type { Actor, AppConfig, LlmConfig, Logger, ModelPricing } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import { releaseWaitingRuns, type Run } from '@cms/engine';
+import { releaseWaitingRuns, type ProviderHealth, type Run } from '@cms/engine';
+import { TOOLS } from './tools/registry.js';
 import { listAgents, resolveAgent, type AgentRef } from './agent-registry.js';
 import { AGENTS } from './registry.js';
 import {
@@ -88,7 +89,7 @@ export async function getControlState(db: Db, brandId: string): Promise<ControlS
 }
 
 /** Queue gate: what a run waits for ("all", "agent:copywriter") or null when it may start. */
-export function makeRunGate(db: Db) {
+export function makeRunGate(db: Db, health?: ProviderHealth | null) {
   return async (run: Run): Promise<string | null> => {
     const state = await getControlState(db, run.brandId);
     if (state.allPaused) return 'all';
@@ -104,6 +105,11 @@ export function makeRunGate(db: Db) {
         const ref = agents.find((r) => r.id === a);
         if (ref && !ref.code && ref.status !== 'active') return `agent:${a}`;
       }
+    }
+    // The LLM provider is down: a step that calls the model waits instead of failing.
+    if (health && needed.some((a) => !TOOLS.some((t) => t.id === a))) {
+      const v = await health.view();
+      if (v.state === 'down' && (v.retryInSeconds ?? 0) > 0) return `provider:${health.provider}`;
     }
     return null;
   };

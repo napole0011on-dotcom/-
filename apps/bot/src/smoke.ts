@@ -1,7 +1,9 @@
 /**
  * First real LLM call(s) with a hard spending limit, through the provider from .env
  * (LLM_PROVIDER=anthropic or tokenharbor).
- *   pnpm smoke:llm
+ *   pnpm smoke:llm          two small requests (worker model)
+ *   pnpm smoke:llm --ceo    plus the exact request the CEO sends (its prompt, schema, max_tokens,
+ *                           effort, model LLM_MODEL_CEO): finds what differs when only agents fail
  * Needs the provider key in .env and a migrated database (pnpm infra:up && pnpm db:migrate).
  *
  * Two identical requests are sent: the second shows whether the provider reports prompt
@@ -10,6 +12,7 @@
  */
 import { z } from 'zod';
 import {
+  AppError,
   BudgetExceededError,
   ConfigError,
   createLogger,
@@ -30,6 +33,7 @@ import { MockNotifier } from '@cms/providers';
 import {
   activePrompts,
   copywriterSystem,
+  runCeo,
   getBrand,
   loadBrandProfileFile,
   upsertBrand,
@@ -120,8 +124,30 @@ async function main() {
           `  priced as ${model} (requested); served by ${r.servedModel}; attempts ${r.attempts}; cost $${r.rawCostUsd.toFixed(6)} (budgeted $${r.costUsd.toFixed(6)})`,
         );
       }
+      if (process.argv.includes('--ceo')) {
+        console.log(
+          `\nCEO request: model ${config.llm.models.ceo}, max_tokens 8000, effort medium, CEO prompt + CeoPlan schema`,
+        );
+        try {
+          const r = await runCeo(
+            { ...agentCtx, models: config.llm.models, callKey: `smoke:${taskId}:ceo` },
+            { brief: 'Пост для Instagram про осеннее меню кофейни' },
+          );
+          console.log(
+            `CEO request OK: ${r.output.deliverables.length} deliverables, cost $${r.costUsd.toFixed(6)}`,
+          );
+        } catch (err) {
+          printError('CEO request', err);
+        }
+      }
     } catch (err) {
-      if (err instanceof BudgetExceededError) {
+      if (
+        err instanceof AppError &&
+        err.code !== 'budget_exceeded' &&
+        !(err instanceof BudgetExceededError)
+      ) {
+        printError('Request', err);
+      } else if (err instanceof BudgetExceededError) {
         console.log(
           `Stopped before calling the API: worst case $${err.requestedUsd.toFixed(4)} would exceed the $${SMOKE_LIMIT_USD} limit. Nothing more was spent.`,
         );
@@ -172,6 +198,14 @@ async function main() {
   } finally {
     await pool.end();
   }
+}
+
+/** Status, request id and the start of the body the provider returned (no keys, no prompt). */
+function printError(what: string, err: unknown) {
+  const d = err instanceof AppError ? err.details : {};
+  console.log(`${what} FAILED: ${err instanceof Error ? err.message : String(err)}`);
+  for (const k of ['userMessage', 'status', 'requestId', 'body', 'retryInSeconds', 'lastError'])
+    if (d[k] !== undefined && d[k] !== null) console.log(`  ${k}: ${JSON.stringify(d[k])}`);
 }
 
 main().catch((err: unknown) => {

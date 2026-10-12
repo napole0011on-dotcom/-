@@ -40,6 +40,7 @@ import {
   queuedRunsOfTask,
   recordDecision,
   resumeTask,
+  releaseWaitingRuns,
   transitionTask,
   withIdempotency,
   type Artifact,
@@ -175,7 +176,7 @@ export class Workflow {
       enqueue: d.enqueue,
       logger: d.logger,
     });
-    this.gate = makeRunGate(d.db);
+    this.gate = makeRunGate(d.db, d.llm.health);
   }
 
   private get budget(): BudgetContext {
@@ -463,6 +464,28 @@ export class Workflow {
     await resumeTask(this.d.db, taskId, actor);
     for (const run of await queuedRunsOfTask(this.d.db, taskId)) await this.d.enqueue(run.id);
     return { ok: true, message: `Добавлено $${extraUsd} (${scope}), продолжаю` };
+  }
+
+  /** «Продолжить» after the task was paused because the LLM provider was unavailable too long. */
+  async resumeAfterProvider(taskId: string, actor: Actor): Promise<DecisionResult> {
+    const task = await this.task(taskId);
+    if (!task.pausedAt || task.pauseReason !== 'provider_unavailable')
+      return { ok: false, message: 'Задача не ждёт провайдера' };
+    await resumeTask(this.d.db, taskId, actor);
+    // The wait starts over: the next outage gets the full LLM_PROVIDER_WAIT_MAX_MINUTES again.
+    await this.d.db
+      .update(runs)
+      .set({ waitingSince: null })
+      .where(sql`${runs.taskId} = ${taskId} and ${runs.status} = 'queued'`);
+    for (const run of await queuedRunsOfTask(this.d.db, taskId)) await this.d.enqueue(run.id);
+    return { ok: true, message: 'Продолжаю с того же шага' };
+  }
+
+  /** «Проверить провайдера»: one tiny request; a success lets waiting runs go right away. */
+  async checkProvider(brandId: string) {
+    const r = await this.d.llm.probe(brandId);
+    if (r.ok) await releaseWaitingRuns(this.d.db, this.d.enqueue);
+    return r;
   }
 
   // ---------------------------------------------------------------- queue handler

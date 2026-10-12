@@ -35,6 +35,19 @@ export interface LlmStatus {
   unpricedModels: string[];
   budget: { dailyUsd: number; monthlyUsd: number; taskUsd: number };
   controls: { allPaused: boolean; changedAt: string | null; changedBy: string | null };
+  health: {
+    state: 'ok' | 'degraded' | 'down';
+    retryInSeconds: number | null;
+    consecutiveFailures: number;
+    lastError: {
+      status?: number | null;
+      requestId?: string | null;
+      body?: string | null;
+      message?: string;
+    } | null;
+    lastErrorAt: string | null;
+    lastOkAt: string | null;
+  };
 }
 
 export type AgentStatus = 'idle' | 'working' | 'waiting_approval' | 'error' | 'paused' | 'disabled';

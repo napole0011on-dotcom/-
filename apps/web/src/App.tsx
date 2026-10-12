@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { Fragment, useEffect, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, setCsrfToken, setUnauthorizedHandler, type LlmStatus, type SessionInfo } from './api';
 import { PROVIDER_LABEL, ROLE_LABEL, actorLabel, dateTime } from './format';
 import { useApprovals, useStatus } from './queries';
 import { matchRoute, usePath } from './router';
 import { Icon } from './icons';
 import { useTheme } from './theme/theme';
-import { Button, ConfirmButton, Link, Loading, useAction } from './ui';
+import { Button, ConfirmButton, Link, Loading, Modal, Pill, useAction, useToast } from './ui';
 import { AgentBuilder } from './pages/AgentBuilder';
 import { Agents } from './pages/Agents';
 import { Approvals } from './pages/Approvals';
@@ -29,24 +29,103 @@ function modelsLabel(s: LlmStatus): string {
     .join(' · ');
 }
 
+const HEALTH_LABEL = { ok: 'работает', degraded: 'ошибки', down: 'недоступен' } as const;
+const HEALTH_TONE = { ok: 'success', degraded: 'accent', down: 'danger' } as const;
+
+/** Provider chip: name, models and health; click -> details and «Проверить провайдера». */
 function LlmBadge() {
   const { data } = useStatus();
+  const [open, setOpen] = useState(false);
+  const toast = useToast();
+  const check = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message: string }>('/api/provider/check'),
+    onSuccess: (r) => toast(r.message, r.ok),
+    onError: () => toast('Проверка не удалась', false),
+  });
   if (!data) return null;
-  const title = [
-    `Провайдер: ${PROVIDER_LABEL[data.provider] ?? data.provider}`,
-    data.gatewayHost ? `Шлюз: ${data.gatewayHost}` : null,
-    ...Object.entries(data.models).map(([r, m]) => `${ROLE_LABEL[r] ?? r}: ${m}`),
-    `Лимит запросов: ${data.rateLimit.perMinute}/мин, ${data.rateLimit.perHour}/час`,
-    data.unpricedModels.length ? `Нет цены: ${data.unpricedModels.join(', ')}` : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const h = data.health;
+  const name = PROVIDER_LABEL[data.provider] ?? data.provider;
+  const healthText =
+    h.state === 'down' && h.retryInSeconds !== null
+      ? `${HEALTH_LABEL.down} · повтор через ${h.retryInSeconds} с`
+      : HEALTH_LABEL[h.state];
   return (
-    <div className="llm-chip" title={title}>
-      <b>{PROVIDER_LABEL[data.provider] ?? data.provider}</b>
-      <span>{modelsLabel(data)}</span>
-      {data.unpricedModels.length > 0 && <span className="danger">нет цены в прайсе</span>}
-    </div>
+    <>
+      <button
+        type="button"
+        className={`llm-chip health-${h.state}`}
+        onClick={() => setOpen(true)}
+        aria-label={`${name}: ${healthText}. Подробнее`}
+        title="Состояние провайдера"
+      >
+        <b>
+          <span className={`dot dot-${HEALTH_TONE[h.state]}`} aria-hidden /> {name}
+          <span className="llm-health"> · {healthText}</span>
+        </b>
+        <span>{modelsLabel(data)}</span>
+        {data.unpricedModels.length > 0 && <span className="danger">нет цены в прайсе</span>}
+      </button>
+      {h.state !== 'ok' && (
+        <button
+          type="button"
+          className={`pill pill-${HEALTH_TONE[h.state]} health-pill`}
+          onClick={() => setOpen(true)}
+        >
+          {name}: {healthText}
+        </button>
+      )}
+      {open && (
+        <Modal title={`Провайдер: ${name}`} onClose={() => setOpen(false)}>
+          <dl className="facts small">
+            <dt>Состояние</dt>
+            <dd>
+              <Pill tone={HEALTH_TONE[h.state]}>{healthText}</Pill>
+            </dd>
+            {data.gatewayHost && (
+              <>
+                <dt>Шлюз</dt>
+                <dd>{data.gatewayHost}</dd>
+              </>
+            )}
+            {Object.entries(data.models).map(([r, m]) => (
+              <Fragment key={r}>
+                <dt>{ROLE_LABEL[r] ?? r}</dt>
+                <dd>
+                  <code>{m}</code>
+                </dd>
+              </Fragment>
+            ))}
+            <dt>Ошибок подряд</dt>
+            <dd>{h.consecutiveFailures}</dd>
+            {h.lastError && (
+              <>
+                <dt>Последняя ошибка</dt>
+                <dd>
+                  {h.lastError.message}
+                  {h.lastError.requestId ? ` · request ${h.lastError.requestId}` : ''}
+                  {h.lastErrorAt ? ` · ${dateTime(h.lastErrorAt)}` : ''}
+                  {h.lastError.body && <pre className="small">{h.lastError.body}</pre>}
+                </dd>
+              </>
+            )}
+            <dt>Последний успех</dt>
+            <dd>{h.lastOkAt ? dateTime(h.lastOkAt) : '—'}</dd>
+          </dl>
+          <p className="small muted">
+            При ошибках шлюза задачи не падают: они ждут, пока провайдер ответит, и продолжаются
+            сами. Проверка — один короткий запрос к модели «{data.models.classifier}».
+          </p>
+          <div className="row">
+            <Button variant="primary" busy={check.isPending} onClick={() => check.mutate()}>
+              Проверить провайдера
+            </Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Закрыть
+            </Button>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 

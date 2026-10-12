@@ -8,7 +8,7 @@ export type Callback =
   | { type: 'item'; action: 'revise' | 'regenerate'; artifactId: string }
   | {
       type: 'task';
-      action: 'approve_all' | 'cancel' | 'reject_ask' | 'reject' | 'reopen';
+      action: 'approve_all' | 'cancel' | 'reject_ask' | 'reject' | 'reopen' | 'resume';
       taskId: string;
     }
   | { type: 'budget'; extraUsd: number; taskId: string }
@@ -21,7 +21,9 @@ export const cb = {
   item: (action: 'ok' | 'v1' | 'v2' | 'v3' | 'ed' | 're', artifactId: string) =>
     `a:${action}:${artifactId}`,
   /** rj = ask to confirm rejection, ry = rejection confirmed, ro = reopen (undo rejection). */
-  task: (action: 'all' | 'no' | 'rj' | 'ry' | 'ro', taskId: string) => `t:${action}:${taskId}`,
+  /** rs = continue after a provider outage pause. */
+  task: (action: 'all' | 'no' | 'rj' | 'ry' | 'ro' | 'rs', taskId: string) =>
+    `t:${action}:${taskId}`,
   budget: (extraUsd: 1 | 5, taskId: string) => `b:${extraUsd}:${taskId}`,
   /** tk = create a task from the transcript, kp = keep it in «Расшифровки» only. */
   transcript: (action: 'tk' | 'kp', transcriptId: string) => `r:${action}:${transcriptId}`,
@@ -50,6 +52,7 @@ export function parseCallback(data: string): Callback | null {
     if (action === 'rj') return { type: 'task', action: 'reject_ask', taskId: id };
     if (action === 'ry') return { type: 'task', action: 'reject', taskId: id };
     if (action === 'ro') return { type: 'task', action: 'reopen', taskId: id };
+    if (action === 'rs') return { type: 'task', action: 'resume', taskId: id };
     return null;
   }
   if (kind === 'r' && (action === 'tk' || action === 'kp'))

@@ -247,6 +247,10 @@ summary {
   gap: var(--s-2);
 }
 .llm-chip {
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   font-size: var(--fs-xs);
@@ -1500,4 +1504,38 @@ label {
   cursor: pointer;
   font-weight: 600;
   margin-bottom: var(--s-2);
+}
+
+/* Provider health in the header */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-idle);
+  vertical-align: middle;
+}
+.dot-success {
+  background: var(--st-done);
+}
+.dot-accent {
+  background: var(--st-waiting);
+}
+.dot-danger {
+  background: var(--st-error);
+}
+.llm-chip.health-down {
+  border-color: var(--st-error);
+}
+.health-pill {
+  display: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-xs);
+}
+@media (max-width: 1680px) {
+  .health-pill {
+    display: inline-flex;
+  }
 }
