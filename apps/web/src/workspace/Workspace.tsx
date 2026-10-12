@@ -451,9 +451,15 @@ function WorkspaceInner() {
               }}
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.4} />
-              <Controls showInteractive={false} position="bottom-right" />
+              <Controls showInteractive={false} position="top-right" />
               {data.nodes.length >= 8 && (
-                <MiniMap pannable zoomable position="top-right" nodeStrokeWidth={2} />
+                <MiniMap
+                  pannable
+                  zoomable
+                  position="bottom-right"
+                  nodeStrokeWidth={2}
+                  style={{ width: 140, height: 90 }}
+                />
               )}
             </ReactFlow>
             <div className="ws-hint">

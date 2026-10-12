@@ -856,8 +856,8 @@ label {
 .agent-off {
   opacity: 0.7;
 }
+/* The agent color comes from the card (style="--agent: ..."); indigo when there is none. */
 .avatar {
-  --agent: var(--c-indigo);
   width: 36px;
   height: 36px;
   border-radius: 11px;
@@ -867,8 +867,8 @@ label {
   color: var(--on-accent);
   background: linear-gradient(
     135deg,
-    var(--agent),
-    color-mix(in srgb, var(--agent) 55%, var(--surface))
+    var(--agent, var(--c-indigo)),
+    color-mix(in srgb, var(--agent, var(--c-indigo)) 55%, var(--surface))
   );
   flex: none;
 }
