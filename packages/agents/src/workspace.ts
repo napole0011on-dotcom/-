@@ -89,17 +89,7 @@ function seedNodes(): Seed[] {
       icon: 'S',
       modelRole: 'worker',
     },
-    {
-      id: 'image',
-      name: 'Image',
-      role: 'картинки через Magnific',
-      description: 'Готовит изображения к постам.',
-      kind: 'code',
-      status: 'planned',
-      color: 'pink',
-      icon: 'И',
-      modelRole: null,
-    },
+    code('image', 'pink', 'И'),
     {
       id: OWNER,
       name: 'Вы',
@@ -121,9 +111,20 @@ export async function ensureWorkspace(db: Db, brandId: string): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`workspace:${brandId}`}))`);
     const seeds = seedNodes();
+    const [{ defs } = { defs: 0 }] = await tx
+      .select({ defs: sql<number>`count(*)::int` })
+      .from(agentDefinitions)
+      .where(sql`${agentDefinitions.brandId} = ${brandId}`);
+    // Seeded once: an agent the owner deleted (e.g. a constructor draft) does not come back.
+    // Code agents and the two human nodes are always present.
+    const always = new Set([BRIEF, OWNER, ...AGENTS.map((a) => a.id)]);
     await tx
       .insert(agentDefinitions)
-      .values(seeds.map((s) => ({ ...s, spec: s.spec ?? {}, brandId, createdBy: SEED_ACTOR })))
+      .values(
+        seeds
+          .filter((s) => defs === 0 || always.has(s.id))
+          .map((s) => ({ ...s, spec: s.spec ?? {}, brandId, createdBy: SEED_ACTOR })),
+      )
       .onConflictDoNothing();
     await tx
       .insert(agentLinks)
@@ -137,6 +138,26 @@ export async function ensureWorkspace(db: Db, brandId: string): Promise<void> {
         })),
       )
       .onConflictDoNothing();
+    // Agents that were "planned" on the board and now exist in code become active once.
+    const upgraded = await tx
+      .update(agentDefinitions)
+      .set({
+        status: 'active',
+        modelRole: sql`coalesce(${agentDefinitions.modelRole}, 'worker')`,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        sql`${agentDefinitions.brandId} = ${brandId} and ${agentDefinitions.kind} = 'code' and ${agentDefinitions.status} = 'planned' and ${agentDefinitions.id} in ${AGENTS.map((a) => a.id)}`,
+      )
+      .returning({ id: agentDefinitions.id });
+    for (const u of upgraded)
+      await tx.insert(auditLog).values({
+        brandId,
+        actorKind: 'system',
+        actorId: SEED_ACTOR,
+        action: 'agent_activated',
+        details: { agent: u.id, from: 'planned', to: 'active', reason: 'implemented in code' },
+      });
     const [{ n } = { n: 0 }] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(agentLayout)

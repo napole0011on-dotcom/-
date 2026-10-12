@@ -7,6 +7,8 @@ import { runCopywriter } from './agents/copywriter.js';
 import { runCritic } from './agents/critic.js';
 import { getBrand } from './brand.js';
 import type { AgentControls } from './controls.js';
+import { MockImageProvider, type ObjectStorage } from '@cms/providers';
+import { imageExecutor } from './agents/image.js';
 import { MockLlmTransport } from './mock-llm.js';
 import {
   normalizePromptText,
@@ -211,6 +213,30 @@ export async function runAgentTest(
     } else if (ref.id === 'copywriter') {
       input = copyInput;
       output = (await runCopywriter(ctx, copyInput)).output;
+    } else if (ref.id === 'image') {
+      // Mock image generator and in-memory storage: free, nothing is kept.
+      const copy = await runCopywriter(ctx, copyInput);
+      const nodeInput: NodeInput = {
+        brief: SAMPLE_BRIEF,
+        plan: SAMPLE_PLAN,
+        upstream: [{ agent: 'copywriter', name: 'Копирайтер', items: copy.output.items }],
+        previous: null,
+        ownerComment: null,
+        criticIssues: [],
+        mode: 'first',
+        step: 'test',
+      };
+      input = { brief: SAMPLE_BRIEF, plan: SAMPLE_PLAN.summary, upstream: 'Копирайтер (пример)' };
+      const exec = imageExecutor({
+        db: d.db,
+        provider: new MockImageProvider(),
+        storage: memoryStorage(),
+        budget: { config: d.config.budget, timeZone: d.config.timezone },
+        estimateUsd: 0,
+      });
+      output = (await exec.run(ctx, nodeInput)).output;
+      render = exec.render(output);
+      review = (await exec.review!(ctx, nodeInput, output)).output;
     } else if (ref.id === 'critic') {
       const copy = await runCopywriter(ctx, copyInput);
       input = { brief: SAMPLE_BRIEF, items: copy.output.items };
@@ -269,4 +295,20 @@ async function audit(db: Db, brandId: string, actor: Actor, details: Record<stri
     action: 'agent_test',
     details,
   });
+}
+
+/** Throwaway storage for test runs (images of a test are not kept). */
+function memoryStorage(): ObjectStorage {
+  const m = new Map<string, Buffer>();
+  return {
+    name: 'memory',
+    put: (key, body, contentType) => {
+      m.set(key, body);
+      return Promise.resolve({ key, size: body.length, contentType });
+    },
+    get: (key) => Promise.resolve(m.get(key) ?? Buffer.alloc(0)),
+    exists: (key) => Promise.resolve(m.has(key)),
+    delete: (key) => Promise.resolve(void m.delete(key)),
+    healthCheck: () => Promise.resolve(),
+  };
 }

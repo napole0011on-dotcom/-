@@ -43,6 +43,8 @@ export interface NodeItemView {
   critic: GenericVerdict | null;
   criticRejected: boolean;
   ownerComment: string | null;
+  /** Files of the result (images): names and mime types; the panel loads them by index. */
+  files: { name: string; mimeType: string }[];
 }
 
 /** What the owner sees at gate 2 (whole package or only the items that changed). */

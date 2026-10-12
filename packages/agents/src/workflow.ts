@@ -10,6 +10,7 @@ import {
   type TaskStatus,
 } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
+import type { ObjectStorage } from '@cms/providers';
 import {
   approveBudgetOverride,
   budgetStatus,
@@ -117,6 +118,8 @@ export interface WorkflowDeps {
   logger: Logger;
   /** Executors for graph steps other than the copywriter, by agent id (constructor, code, tool). */
   executors?: Record<string, NodeExecutor>;
+  /** Object storage with files of steps (images); copied into the export folder. */
+  storage?: ObjectStorage;
 }
 
 export interface DecisionResult {
@@ -933,6 +936,7 @@ export class Workflow {
             }
           })(),
           inputSig: input.inputSig,
+          files: exec.files?.(res.output) ?? [],
           critic: verdict,
           criticRound: round + 1,
           criticRejected: !!verdict && !verdict.passed && last,
@@ -1027,6 +1031,7 @@ export class Workflow {
           model: a.model,
           render: c.render,
           output: c.output,
+          files: c.files ?? [],
         };
       });
     const spend = await this.spend(task);
@@ -1038,6 +1043,7 @@ export class Workflow {
         spend.spentUsd,
         new Date(),
         nodes,
+        this.d.storage ? (key) => this.d.storage!.get(key) : undefined,
       );
       return { dir: r.dir };
     });
@@ -1213,5 +1219,6 @@ export function toNodeView(a: Artifact): NodeItemView {
     critic: c.critic,
     criticRejected: c.criticRejected,
     ownerComment: c.ownerComment,
+    files: (c.files ?? []).map((f) => ({ name: f.name, mimeType: f.mimeType })),
   };
 }

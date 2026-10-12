@@ -39,10 +39,19 @@ export interface NodeRender {
   lines: string[];
 }
 
+/** A file a step produced (image, document), kept in object storage under `key`. */
+export interface NodeFile {
+  name: string;
+  key: string;
+  mimeType: string;
+}
+
 /** A step of the graph other than the copywriter: code agent, constructor agent or tool. */
 export interface NodeExecutor {
   run(ctx: AgentContext, input: NodeInput): Promise<AgentResult<unknown>>;
   render(output: unknown): NodeRender;
+  /** Files of the result (shown in the panel, copied into the export folder). */
+  files?(output: unknown): NodeFile[];
   /** Optional Critic review (used when the board has a link step -> Critic). */
   review?(
     ctx: AgentContext,
@@ -63,6 +72,7 @@ export interface NodeContent extends Record<string, unknown> {
   criticRound: number;
   criticRejected: boolean;
   ownerComment: string | null;
+  files?: NodeFile[];
 }
 
 export const nodeSlot = (agent: string) => `node:${agent}:main`;

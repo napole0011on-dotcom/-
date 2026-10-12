@@ -10,12 +10,15 @@ import {
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
 import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
+import { createProviders, createStorage } from '@cms/providers';
 import {
   MockLlmTransport,
   Workflow,
+  codeExecutors,
   loadBrandProfileFile,
   ensureWorkspace,
   syncPromptFiles,
+  installPresets,
   upsertBrand,
 } from '@cms/agents';
 import { makeActions } from './actions.js';
@@ -85,7 +88,27 @@ async function main() {
     notifier: channel,
     logger,
   });
-  const workflow = new Workflow({ db, llm, channel, enqueue, config, pricing, logger });
+  // PROVIDERS_MODE=real fails here explicitly: the Magnific adapter is not built yet.
+  const providers = createProviders(config);
+  const storage = createStorage(config.storage);
+  const workflow = new Workflow({
+    db,
+    llm,
+    channel,
+    enqueue,
+    config,
+    pricing,
+    logger,
+    storage,
+    executors: codeExecutors({ db, config, image: providers.image, storage }),
+  });
+
+  // Ready-made constructor agents (SEO): saved, tested on the mock ($0), switched on once.
+  const presets = await installPresets(
+    { db, config, controls: workflow.controls, logger },
+    brand.id,
+  );
+  if (presets.length) logger.info({ presets }, 'preset agents installed');
 
   const queue = await RunQueue.start({
     config,

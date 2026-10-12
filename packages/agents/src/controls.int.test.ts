@@ -288,7 +288,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
 
     // A changed prompt file is added as a version but NOT activated.
     const dir = mkdtempSync(path.join(tmpdir(), 'prompts-'));
-    for (const f of ['ceo.md', 'copywriter.md', 'critic.md', 'ai-cliches.ru.txt'])
+    for (const f of ['ceo.md', 'copywriter.md', 'critic.md', 'image.md', 'ai-cliches.ru.txt'])
       writeFileSync(path.join(dir, f), readFileSync(path.join(PROMPTS_DIR, f)));
     writeFileSync(
       path.join(dir, 'ceo.md'),
@@ -311,7 +311,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
     const s = await setup();
     await s.wf.controls.setPaused(s.brand.id, 'critic', true, OWNER);
     const deps = { db: t.db, config: s.config, controls: s.wf.controls, logger: silentLogger };
-    for (const agent of ['ceo', 'copywriter', 'critic']) {
+    for (const agent of ['ceo', 'copywriter', 'critic', 'image']) {
       const r = await runAgentTest(deps, s.brand.id, agent, {}, OWNER);
       expect(r.ok, r.message).toBe(true);
       expect(r.output).toBeTruthy();
@@ -334,12 +334,12 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
       .where(
         sql`${schema.tasks.brandId} = ${s.brand.id} and ${schema.tasks.kind} = ${TEST_TASK_KIND}`,
       );
-    expect(testTasks.length).toBe(4);
+    expect(testTasks.length).toBe(5);
     const [cost] = await t.db
       .select({ usd: sql<string>`coalesce(sum(${schema.costRecords.costUsd}), 0)` })
       .from(schema.costRecords)
       .where(sql`${schema.costRecords.brandId} = ${s.brand.id}`);
     expect(Number(cost!.usd)).toBe(0);
-    expect((await s.audit('agent_test')).length).toBe(4); // the invalid draft is rejected before running
+    expect((await s.audit('agent_test')).length).toBe(5); // the invalid draft is rejected before running
   });
 });

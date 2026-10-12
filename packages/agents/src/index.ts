@@ -23,3 +23,6 @@ export * from './events.js';
 export * from './nodes.js';
 export * from './constructor.js';
 export * from './agent-registry.js';
+export * from './agents/image.js';
+export * from './executors.js';
+export * from './presets.js';

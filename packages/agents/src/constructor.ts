@@ -203,6 +203,53 @@ export const GENERIC_CRITIC_VERSION = promptLabel(
   promptHash(GENERIC_CRITIC_PROMPT),
 );
 
+/**
+ * The Critic checking a non-copy result by the agent's criteria (constructor agents, Image, ...).
+ * Without criteria: fits the brief and the agent's role, no invented facts.
+ */
+export async function genericReview(
+  ctx: AgentContext,
+  input: NodeInput,
+  output: unknown,
+  def: { id: string; name: string; role: string; criteria?: readonly string[] },
+): Promise<AgentResult<GenericVerdict>> {
+  const criteria = def.criteria?.length
+    ? def.criteria
+    : ['результат отвечает брифу и роли агента', 'нет выдуманных фактов, цифр и обещаний'];
+  const r = await ctx.llm.callStructured({
+    ctx: {
+      brandId: ctx.brand.id,
+      taskId: ctx.taskId,
+      runId: ctx.runId,
+      agent: 'critic',
+      promptVersion: GENERIC_CRITIC_VERSION,
+    },
+    model: ctx.models.critic,
+    system: [
+      { text: GENERIC_CRITIC_PROMPT, cache: true },
+      { text: renderBrandForPrompt(ctx.brand), cache: true },
+      { text: EXTERNAL_DATA_RULES },
+    ],
+    prompt: [
+      `Бриф владельца:\n${input.brief}`,
+      `Агент «${def.name}»: ${def.role}`,
+      `Критерии проверки:\n${criteria.map((c) => `- ${c}`).join('\n')}`,
+      `Результат агента:\n${wrapExternalData(`result:${def.id}`, json(output))}`,
+    ].join('\n\n'),
+    schema: GenericReview,
+    maxTokens: 3000,
+    effort: 'medium',
+    idempotencyKey: `${ctx.callKey}:critic:${def.id}:${input.step}`,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+  });
+  return {
+    output: r.output,
+    promptVersion: GENERIC_CRITIC_VERSION,
+    model: r.servedModel,
+    costUsd: r.costUsd,
+  };
+}
+
 /** Executor for a constructor agent (and the Critic review of its result). */
 export function constructorExecutor(def: ConstructorAgentDef): NodeExecutor {
   const schema = outputSchema(def.id, def.spec.fields);
@@ -240,44 +287,10 @@ export function constructorExecutor(def: ConstructorAgentDef): NodeExecutor {
       };
     },
     render(output: unknown) {
-      return renderBySpec(def.name, def.spec.fields, output);
+      return renderBySpec('Результат', def.spec.fields, output);
     },
-    async review(ctx, input, output): Promise<AgentResult<GenericVerdict>> {
-      const criteria = def.spec.criteria.length
-        ? def.spec.criteria
-        : ['результат отвечает брифу и роли агента', 'нет выдуманных фактов, цифр и обещаний'];
-      const r = await ctx.llm.callStructured({
-        ctx: {
-          brandId: ctx.brand.id,
-          taskId: ctx.taskId,
-          runId: ctx.runId,
-          agent: 'critic',
-          promptVersion: GENERIC_CRITIC_VERSION,
-        },
-        model: ctx.models.critic,
-        system: [
-          { text: GENERIC_CRITIC_PROMPT, cache: true },
-          { text: renderBrandForPrompt(ctx.brand), cache: true },
-          { text: EXTERNAL_DATA_RULES },
-        ],
-        prompt: [
-          `Бриф владельца:\n${input.brief}`,
-          `Агент «${def.name}»: ${def.role}`,
-          `Критерии проверки:\n${criteria.map((c) => `- ${c}`).join('\n')}`,
-          `Результат агента:\n${wrapExternalData(`result:${def.id}`, json(output))}`,
-        ].join('\n\n'),
-        schema: GenericReview,
-        maxTokens: 3000,
-        effort: 'medium',
-        idempotencyKey: `${ctx.callKey}:critic:${def.id}:${input.step}`,
-        ...(ctx.signal ? { signal: ctx.signal } : {}),
-      });
-      return {
-        output: r.output,
-        promptVersion: GENERIC_CRITIC_VERSION,
-        model: r.servedModel,
-        costUsd: r.costUsd,
-      };
+    review(ctx, input, output) {
+      return genericReview(ctx, input, output, { ...def, criteria: def.spec.criteria });
     },
   };
 }

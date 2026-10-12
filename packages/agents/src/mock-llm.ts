@@ -18,6 +18,7 @@ export class MockLlmTransport implements LlmTransport {
     if (title === 'CeoPlan') body = mockPlan(prompt);
     else if (title === 'CopywriterOutput') body = mockCopy(prompt);
     else if (title === 'CriticOutput') body = mockCritic(prompt);
+    else if (title === 'ImageBriefs') body = mockImages(prompt);
     else body = schema ? mockFromSchema(schema) : {};
     return Promise.resolve({
       id: `mock_${this.calls}`,
@@ -135,6 +136,20 @@ export function mockFromSchema(
       return text.length >= minLength ? text : text.padEnd(minLength, '.');
     }
   }
+}
+
+/** Image briefs for the deliverables listed in the prompt (with the aspect the agent suggests). */
+function mockImages(prompt: string) {
+  const json = /Единицы контента:\n(\[[\s\S]*?\n\])/.exec(prompt)?.[1] ?? '[]';
+  const items = JSON.parse(json) as { id: string; topic: string; aspect?: string }[];
+  return {
+    images: items.map((d) => ({
+      deliverableId: d.id,
+      prompt: `[MOCK] Warm autumn coffee shop scene for "${d.topic}", soft window light, no text`,
+      alt: `[MOCK] Картинка к «${d.topic}»`,
+      aspect: ['4:5', '9:16', '16:9'].includes(d.aspect ?? '') ? d.aspect : '4:5',
+    })),
+  };
 }
 
 function promptText(params: LlmRequest): string {

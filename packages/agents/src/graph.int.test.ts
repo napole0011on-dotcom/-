@@ -230,6 +230,12 @@ describe('board links drive execution (Postgres)', () => {
     expect((await addLink(t.db, s.brand.id, 'seo', 'copywriter', OWNER)).ok).toBe(true);
     expect((await addLink(t.db, s.brand.id, 'copywriter', 'seo', OWNER)).message).toMatch(/цикл/);
     // A link to a planned agent is stored but marked as not working yet.
+    await t.db
+      .update(schema.agentDefinitions)
+      .set({ status: 'planned' })
+      .where(
+        sql`${schema.agentDefinitions.brandId} = ${s.brand.id} and ${schema.agentDefinitions.id} = 'image'`,
+      );
     const planned = await addLink(t.db, s.brand.id, 'critic', 'image', OWNER);
     expect(planned.message).toMatch(/заработает/);
 

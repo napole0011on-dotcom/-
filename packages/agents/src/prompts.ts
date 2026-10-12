@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const AGENT_NAMES = ['ceo', 'copywriter', 'critic'] as const;
+export const AGENT_NAMES = ['ceo', 'copywriter', 'critic', 'image'] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 
 /** Prompts of one run: the code agents always, registry agents when they have an active version. */
@@ -48,7 +48,7 @@ export interface LoadedPrompt {
 export const PROMPTS_DIR = path.resolve(import.meta.dirname, '..', 'prompts');
 
 /** Parses `---\nversion: N\n---` front matter. Editing a prompt without bumping the version still changes the hash. */
-export function parsePrompt(agent: AgentName, raw: string): LoadedPrompt {
+export function parsePrompt(agent: string, raw: string): LoadedPrompt {
   const text = raw.replace(/\r\n/g, '\n');
   const m = /^---\nversion:\s*(\d+)\s*\n---\n([\s\S]*)$/.exec(text);
   if (!m) throw new Error(`Prompt ${agent}.md must start with "---\\nversion: N\\n---"`);

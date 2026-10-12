@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { LlmConfig } from '@cms/core';
 import type { AgentName } from './prompts.js';
+import { ImageBriefs } from './agents/image.js';
 import { CeoPlan, Review } from './schemas.js';
 
 export type ModelRole = keyof LlmConfig['models'];
@@ -58,6 +59,16 @@ export const AGENTS: readonly AgentDefinition[] = [
     modelRole: 'critic',
     prompt: 'critic',
     output: Review,
+  },
+  {
+    id: 'image',
+    name: 'Image',
+    role: 'Картинки к постам через Magnific',
+    description:
+      'Пишет задания для генератора по плану и текстам, генерирует картинки (сейчас — mock Magnific) и кладёт их в хранилище.',
+    modelRole: 'worker',
+    prompt: 'image',
+    output: ImageBriefs,
   },
 ];
 

@@ -9,7 +9,7 @@ import {
   type Deliverable,
 } from './schemas.js';
 import type { Verdict } from './agents/critic.js';
-import type { NodeRender } from './nodes.js';
+import type { NodeFile, NodeRender } from './nodes.js';
 
 /** An approved result of another graph step (SEO, Image, KP, ...). */
 export interface ExportNodeItem {
@@ -21,6 +21,8 @@ export interface ExportNodeItem {
   model: string | null;
   render: NodeRender;
   output: unknown;
+  /** Files of the step (images), copied to `<agent>/<name>` in the export folder. */
+  files?: NodeFile[];
 }
 
 export interface ExportItem {
@@ -105,6 +107,7 @@ export function renderPackageMarkdown(
       `## ${n.agentName}: ${n.render.title}`,
       '',
       ...n.render.lines.map((l) => `- ${l}`),
+      ...(n.files?.length ? ['', ...n.files.map((f) => `- файл: ${n.agent}/${f.name}`)] : []),
       '',
       `Версия ${n.version}, промпт ${n.promptVersion}, модель ${n.model ?? '—'}`,
       '',
@@ -121,6 +124,7 @@ export async function writePackage(
   spentUsd: number,
   now = new Date(),
   nodes: ExportNodeItem[] = [],
+  readFile?: (key: string) => Promise<Buffer>,
 ): Promise<{ dir: string; files: { name: string; content: Buffer }[] }> {
   const dir = path.join(exportDir, `${now.toISOString().slice(0, 10)}_${task.id.slice(0, 8)}`);
   await mkdir(dir, { recursive: true });
@@ -141,5 +145,15 @@ export async function writePackage(
     },
   ];
   for (const f of files) await writeFile(path.join(dir, f.name), f.content);
+  if (readFile) {
+    for (const n of nodes) {
+      if (!n.files?.length) continue;
+      const sub = path.join(dir, n.agent);
+      await mkdir(sub, { recursive: true });
+      // Names come from code (deliverable id + extension), never from the model's free text.
+      for (const f of n.files)
+        await writeFile(path.join(sub, path.basename(f.name)), await readFile(f.key));
+    }
+  }
   return { dir, files };
 }
