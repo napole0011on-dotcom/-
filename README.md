@@ -501,3 +501,27 @@ docker compose down -v          # снести вместе с данными
   `VOICE_MAX_MB` / `VIDEO_MAX_MB`. Голосовые больше 20 МБ бот скачать не может — загрузите их в панели.
 - «STT_PROVIDER=local: укажите WHISPER_CPP_MODEL» — не задан путь к модели.
 - КП с пометкой «пример справочника» — нет `config/pricing/services.yaml`.
+
+## Что осталось сделать руками
+
+Всё ниже требует ваших ключей, денег, регистрации или решения — поэтому сделано только на mock.
+
+1. **Ключи в `.env`** (вставляете сами): `ANTHROPIC_API_KEY` или `TOKENHARBOR_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_OWNER_ID`, `PANEL_PASSWORD_HASH` (`pnpm panel:password`). Затем `LLM_PROVIDER=anthropic|tokenharbor`
+   и `pnpm smoke:llm` (лимит $0.02).
+2. **Справочник цен КП:** `config/pricing/services.yaml` (по образцу `services.example.yaml`), реквизиты, свои
+   кейсы, `KP_VAT_PERCENT`. Пришлите 2–3 прошлых КП — подстрою промпт агента КП.
+3. **Распознавание речи без облака:** установить ffmpeg (`winget install --id Gyan.FFmpeg -e`) и whisper.cpp +
+   модель, `STT_PROVIDER=local`. Проверить скорость на вашем процессоре на 2–3 своих голосовых (флаги
+   whisper-cli помечены TODO(verify)).
+4. **Magnific (картинки):** нужен ключ и сверка с актуальной документацией API — адаптер напишу после вашего «ок»;
+   сейчас `MockImageProvider`. Заодно уточнить цену картинки → `IMAGE_MAX_COST_USD`.
+5. **Почта:** выбрать сервис (рекомендация — UniOne или SMTP своего домена), настроить SPF/DKIM/DMARC, страницу
+   отписки (`MAIL_UNSUBSCRIBE_URL`), `MAIL_FROM`, `MAIL_TEST_TO`. Реальная отправка — только после вашего
+   отдельного «ок» и тестового письма вам. Перед первой рекламной рассылкой — консультация юриста (ст. 18 ФЗ
+   «О рекламе», согласие по 152-ФЗ отдельным документом).
+6. **Контакты:** CSV с колонками `email,name,consent_at,consent_source` — только адреса с подтверждённым согласием.
+7. **Облачное распознавание и загрузка видео по ссылке (yt-dlp)** — не подключены, нужен ваш «ок».
+8. **Проверить на Windows:** `pnpm install`, `pnpm infra:up`, `pnpm db:migrate`, `pnpm build`, `pnpm start:api` и
+   `pnpm dev:bot`, затем сценарии из разделов «Шаг 2.6», «Конструктор агентов», «Этап 3», «Шаг 2.7».
+9. **Этапы дальше по плану:** Instagram Analyst (CSV → Graph API), контейнеры и VPS, eval и ревью безопасности.
