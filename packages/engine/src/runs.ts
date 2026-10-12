@@ -89,6 +89,7 @@ export async function completeRun(
     .update(runs)
     .set({
       status: 'succeeded',
+      waitingSince: null,
       output,
       error: null,
       finishedAt: sql`now()`,
@@ -116,6 +117,7 @@ export async function holdRun(db: DbOrTx, id: string, waitingFor: string): Promi
     .set({
       status: 'queued',
       waitingFor,
+      waitingSince: sql`coalesce(${runs.waitingSince}, now())`,
       attempt: sql`greatest(${runs.attempt} - 1, 0)`,
       startedAt: null,
       heartbeatAt: null,

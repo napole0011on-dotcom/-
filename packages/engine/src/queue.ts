@@ -22,8 +22,10 @@ import {
   type Run,
 } from './runs.js';
 import { pauseTask, transitionTask } from './transitions.js';
+import { ProviderUnavailableError } from './llm/health.js';
+import { PROVIDER_LABEL } from './llm/transport.js';
 
-const { tasks } = schema;
+const { tasks, runs } = schema;
 
 export const QUEUE_RUNS = 'agent-runs';
 export const QUEUE_RUNS_DEAD = 'agent-runs-dead';
@@ -55,6 +57,10 @@ export interface RunDeps {
    * a run that already started is finished normally.
    */
   gate?: (run: Run) => Promise<string | null>;
+  /** Waiting for an unavailable LLM provider: re-check period and the limit before pausing the task. */
+  provider?: { recheckSeconds: number; waitMaxMinutes: number };
+  /** Buttons for the "provider unavailable, task paused" message (e.g. "Продолжить"). */
+  providerPauseButtons?: (taskId: string) => NotifierButton[][];
 }
 
 /** Cap on Retry-After re-deliveries per run, so a permanently throttled run still ends in dead letter. */
@@ -100,6 +106,8 @@ export async function processRun(
 
   const waitingFor = deps.gate ? await deps.gate(run) : null;
   if (waitingFor) {
+    if (waitingFor.startsWith('provider:'))
+      return waitForProvider(deps, run, waitingFor.slice('provider:'.length), null, log);
     await holdRun(db, run.id, waitingFor);
     log.info({ waitingFor }, 'agent is paused; run waits in the queue');
     return 'waiting';
@@ -122,6 +130,14 @@ export async function processRun(
     log.info('run succeeded');
     return 'succeeded';
   } catch (err) {
+    if (err instanceof ProviderUnavailableError)
+      return waitForProvider(
+        deps,
+        run,
+        String(err.details.provider),
+        Number(err.details.retryInSeconds),
+        log,
+      );
     if (err instanceof BudgetExceededError) {
       await requeueRun(db, run.id, err);
       const paused = await pauseTask(db, run.taskId, `budget:${err.scope}`, SYSTEM);
@@ -162,6 +178,49 @@ export async function processRun(
   } finally {
     clearInterval(beat);
   }
+}
+
+/**
+ * The LLM provider is down: the run waits in the queue (no attempt spent) and comes back after
+ * the breaker cooldown. Waiting longer than LLM_PROVIDER_WAIT_MAX_MINUTES pauses the task and
+ * tells the owner; it continues by itself when the provider answers again before that.
+ */
+async function waitForProvider(
+  deps: RunDeps,
+  run: Run,
+  provider: string,
+  retryInSeconds: number | null,
+  log: Logger,
+): Promise<RunOutcome> {
+  const { db } = deps;
+  const waitingFor = `provider:${provider}`;
+  await holdRun(db, run.id, waitingFor);
+  const [r] = await db
+    .select({ since: runs.waitingSince })
+    .from(runs)
+    .where(sql`${runs.id} = ${run.id}`);
+  const limitMin = deps.provider?.waitMaxMinutes ?? 60;
+  const waitedMin = r?.since ? (Date.now() - r.since.getTime()) / 60_000 : 0;
+  if (waitedMin >= limitMin) {
+    const paused = await pauseTask(db, run.taskId, 'provider_unavailable', SYSTEM);
+    if (paused) {
+      await deps.notifier.send({
+        text:
+          `Задача на паузе: ${PROVIDER_LABEL[provider] ?? provider} недоступен дольше ${limitMin} мин. ` +
+          'Когда провайдер заработает, нажмите «Продолжить» — задача пойдёт с того же шага.',
+        ...(deps.providerPauseButtons ? { buttons: deps.providerPauseButtons(run.taskId) } : {}),
+      });
+    }
+    log.warn(
+      { provider, waitedMin: Math.round(waitedMin) },
+      'provider wait limit reached; task paused',
+    );
+    return 'paused';
+  }
+  const delay = Math.max(5, retryInSeconds ?? deps.provider?.recheckSeconds ?? 60);
+  if (deps.enqueueAfter) await deps.enqueueAfter(run.id, delay + 1);
+  log.warn({ provider, retryInSeconds: delay }, 'provider unavailable; run waits');
+  return 'waiting';
 }
 
 /** Called for jobs that exhausted their retries (dead-letter queue). */

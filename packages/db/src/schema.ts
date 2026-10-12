@@ -89,6 +89,8 @@ export const runs = pgTable(
     promptVersion: text('prompt_version'),
     /** Set while the run waits in the queue for a paused/disabled agent, e.g. "agent:copywriter" or "all". */
     waitingFor: text('waiting_for'),
+    /** When the run started waiting (provider down, agent paused): limits the wait. */
+    waitingSince: timestamp('waiting_since', { withTimezone: true }),
     /** 0..100 for long tool steps (video transcription); null = not reported. */
     progress: integer('progress'),
     startedAt: timestamp('started_at', { withTimezone: true }),
@@ -656,3 +658,17 @@ export const campaignSends = pgTable(
   },
   (t) => [uniqueIndex('campaign_sends_uq').on(t.campaignId, t.contactId)],
 );
+
+/** Health of an LLM provider (circuit breaker), shared by the bot (worker) and the API (header). */
+export const providerStatus = pgTable('provider_status', {
+  provider: text('provider').primaryKey(),
+  /** ok | degraded (errors, still trying) | down (calls wait until open_until) */
+  state: text('state').notNull().default('ok'),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  /** Last error: status, request id, short body, human text (never keys or prompt text). */
+  lastError: jsonb('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+  lastOkAt: timestamp('last_ok_at', { withTimezone: true }),
+  openUntil: timestamp('open_until', { withTimezone: true }),
+  updatedAt: updatedAt(),
+});

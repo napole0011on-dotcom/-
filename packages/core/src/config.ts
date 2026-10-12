@@ -91,6 +91,16 @@ const envSchema = z
     LLM_MODEL_CLASSIFIER: z.string().min(1).default('claude-haiku-5-5'),
     LLM_TIMEOUT_MS: positiveInt.default(180_000),
     LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(3),
+    // Backoff between retries of one call: base * 2^n with jitter, capped; Retry-After wins.
+    LLM_RETRY_BASE_MS: positiveInt.max(60_000).default(2_000),
+    LLM_RETRY_MAX_MS: positiveInt.max(600_000).default(30_000),
+    // Circuit breaker: after N transient errors in a row the provider is "down" for the cooldown.
+    LLM_BREAKER_THRESHOLD: positiveInt.max(100).default(4),
+    LLM_BREAKER_COOLDOWN_SECONDS: positiveInt.max(3600).default(60),
+    // A task waits for the provider this long, then pauses and the owner gets a message.
+    LLM_PROVIDER_WAIT_MAX_MINUTES: positiveInt.max(10_080).default(60),
+    // Optional second model (must be in the price list), tried after the main one keeps failing.
+    LLM_FALLBACK_MODEL: z.string().min(1).optional(),
     LLM_STORE_FULL_TEXT: bool.default(true),
     LLM_REFUSAL_FALLBACK: bool.default(true),
     // Default depends on LLM_PROVIDER: config/model-pricing.json or config/model-pricing.tokenharbor.json.
@@ -288,6 +298,12 @@ export interface LlmConfig {
   structuredOutputs: boolean;
   rateLimit: { perMinute: number; perHour: number };
   costSafetyFactor: number;
+  retry: { baseMs: number; maxMs: number };
+  breaker: { threshold: number; cooldownSeconds: number };
+  /** Minutes a task waits for an unavailable provider before it is paused. */
+  providerWaitMaxMinutes: number;
+  /** Second model (from the price list) after the main one keeps failing; null = none. */
+  fallbackModel: string | null;
 }
 
 export interface BudgetConfig {
@@ -372,6 +388,13 @@ export function loadConfig(
       structuredOutputs: e.LLM_STRUCTURED_OUTPUTS,
       rateLimit: { perMinute: e.LLM_RATE_LIMIT_PER_MINUTE, perHour: e.LLM_RATE_LIMIT_PER_HOUR },
       costSafetyFactor: e.LLM_COST_SAFETY_FACTOR,
+      retry: { baseMs: e.LLM_RETRY_BASE_MS, maxMs: e.LLM_RETRY_MAX_MS },
+      breaker: {
+        threshold: e.LLM_BREAKER_THRESHOLD,
+        cooldownSeconds: e.LLM_BREAKER_COOLDOWN_SECONDS,
+      },
+      providerWaitMaxMinutes: e.LLM_PROVIDER_WAIT_MAX_MINUTES,
+      fallbackModel: e.LLM_FALLBACK_MODEL ?? null,
       models: {
         ceo: e.LLM_MODEL_CEO,
         critic: e.LLM_MODEL_CRITIC,

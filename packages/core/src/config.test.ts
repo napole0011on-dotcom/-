@@ -24,6 +24,9 @@ describe('loadConfig', () => {
     expect(c.dryRun).toBe(true);
     expect(c.publishEnabled).toBe(false);
     expect(c.imageMaxCostUsd).toBe(0.1);
+    expect(c.llm.breaker).toEqual({ threshold: 4, cooldownSeconds: 60 });
+    expect(c.llm.fallbackModel).toBeNull();
+    expect(c.llm.providerWaitMaxMinutes).toBe(60);
     expect(c.media.sttProvider).toBe('mock');
     expect(c.media.voiceMaxBytes).toBe(20 * 1024 * 1024);
     expect(c.mail.provider).toBe('mock');

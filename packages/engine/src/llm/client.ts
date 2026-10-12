@@ -7,6 +7,7 @@ import type {
 import { z } from 'zod';
 import {
   PermanentError,
+  TransientError,
   computeLlmCost,
   priceKeyForServedModel,
   errorToJson,
@@ -25,8 +26,11 @@ import {
   type BudgetContext,
 } from '../budget.js';
 import { withIdempotency } from '../idempotency.js';
+import { ProviderHealth, ProviderUnavailableError } from './health.js';
 import {
+  PROVIDER_LABEL,
   classifyLlmError,
+  describeProviderError,
   type LlmRequest,
   type LlmResponse,
   type LlmTransport,
@@ -204,6 +208,7 @@ export function schemaInstruction(schema: z.ZodType): string {
   ].join('\n');
 }
 
+const text = (v: unknown) => (typeof v === 'string' ? v : '');
 const round8 = (n: number) => Math.round(n * 1e8) / 1e8;
 
 function validationFeedback(issues: string): string {
@@ -214,8 +219,62 @@ function validationFeedback(issues: string): string {
   ].join('\n');
 }
 
+/** Pause before retry n (0-based): Retry-After if the provider sent it, else base*2^n ± 25%. */
+export function backoffMs(
+  n: number,
+  retry: { baseMs: number; maxMs: number },
+  retryAfterMs: number | null,
+  random: () => number = Math.random,
+): number {
+  if (retryAfterMs !== null && retryAfterMs > 0) return Math.min(retryAfterMs, retry.maxMs * 4);
+  const exp = Math.min(retry.maxMs, retry.baseMs * 2 ** n);
+  return Math.round(exp * (0.75 + random() * 0.5));
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('aborted'));
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t);
+        reject(new Error('aborted'));
+      },
+      { once: true },
+    );
+  });
+}
+
+/** The facts of a provider error kept in provider_status and shown in the panel. */
+function errorDetails(err: TransientError | PermanentError): Record<string, unknown> {
+  const d = err.details;
+  return {
+    code: err.code,
+    status: d.status ?? null,
+    requestId: d.requestId ?? null,
+    body: d.body ?? null,
+    message: d.userMessage ?? err.message,
+  };
+}
+
 export class LlmClient {
-  constructor(private readonly deps: LlmClientDeps) {}
+  /** Circuit breaker of the real provider (none for mock: it never fails). */
+  readonly health: ProviderHealth | null;
+
+  constructor(private readonly deps: LlmClientDeps) {
+    const c = deps.config;
+    this.health =
+      c.provider === 'mock'
+        ? null
+        : new ProviderHealth(deps.db, c.provider, c.breaker, deps.logger);
+    // A fallback model must have a price; otherwise the configuration is wrong — say so now.
+    if (c.fallbackModel && !deps.pricing.models[c.fallbackModel])
+      throw new PermanentError(
+        'fallback_model_unpriced',
+        `LLM_FALLBACK_MODEL=${c.fallbackModel} is not in the price list ${c.pricingFile}`,
+      );
+  }
 
   async callStructured<T>(input: StructuredCallInput<T>): Promise<StructuredCallResult<T>> {
     const { result, replayed } = await withIdempotency(
@@ -295,25 +354,17 @@ export class LlmClient {
 
       const started = Date.now();
       let res: LlmResponse;
+      let usedModel: string;
       try {
-        res = await this.deps.transport.create(params, {
-          timeout: this.deps.config.timeoutMs,
-          ...(input.signal ? { signal: input.signal } : {}),
-        });
+        ({ res, model: usedModel } = await this.send(input, attempt, params, log));
       } catch (err) {
-        const classified = classifyLlmError(err);
         await releaseCost(this.deps.db, reservation.id);
-        await this.record(input, attempt, params, null, {
-          status: 'error',
-          latencyMs: Date.now() - started,
-          error: errorToJson(classified),
-        });
-        log.warn({ attempt, err: errorToJson(classified) }, 'llm call failed');
-        throw classified;
+        throw err;
       }
       const latencyMs = Date.now() - started;
 
-      const cost = costOfResponse(this.deps.pricing, input.model, res);
+      // A fallback model is priced as the model we requested for that call.
+      const cost = costOfResponse(this.deps.pricing, usedModel, res);
       if (cost.servedMismatch) {
         log.warn(
           { requestedModel: input.model, servedModel: res.model },
@@ -325,7 +376,7 @@ export class LlmClient {
         costUsd: round8(cost.usd * factor),
         rawCostUsd: cost.usd,
         // The model the price was taken from (= requested); the served name stays in llm_calls.
-        model: input.model,
+        model: usedModel,
         estimated: cost.estimated,
         inputTokens: cost.totals.input,
         outputTokens: cost.totals.output,
@@ -410,6 +461,192 @@ export class LlmClient {
       messages.push({ role: 'user', content: validationFeedback(issues!) });
     }
     throw new Error('unreachable');
+  }
+
+  /**
+   * One HTTP request with retries: 429/5xx/network errors are retried with exponential backoff
+   * and jitter (Retry-After wins), every try is logged with status, request id and a short body.
+   * Repeated failures open the circuit breaker: the caller gets ProviderUnavailableError and the
+   * run waits instead of failing. LLM_FALLBACK_MODEL (from the price list) is tried last.
+   * There is never a switch to mock.
+   */
+  private async send(
+    input: StructuredCallInput<unknown>,
+    attempt: number,
+    params: LlmRequest,
+    log: Logger,
+  ): Promise<{ res: LlmResponse; model: string }> {
+    const cfg = this.deps.config;
+    const models = [
+      params.model,
+      ...(cfg.fallbackModel && cfg.fallbackModel !== params.model ? [cfg.fallbackModel] : []),
+    ];
+    let last: TransientError | PermanentError | null = null;
+    for (const model of models) {
+      for (let t = 0; t <= cfg.maxRetries; t++) {
+        await this.health?.before();
+        const started = Date.now();
+        const p = { ...params, model };
+        try {
+          const res = await this.deps.transport.create(p, {
+            timeout: cfg.timeoutMs,
+            ...(input.signal ? { signal: input.signal } : {}),
+          });
+          await this.health?.success();
+          if (model !== params.model)
+            log.warn({ model, requested: params.model }, 'answered by LLM_FALLBACK_MODEL');
+          return { res, model };
+        } catch (err) {
+          const c = classifyLlmError(err, cfg.provider);
+          const retryable =
+            c instanceof TransientError && c.code !== 'llm_aborted' && !input.signal?.aborted;
+          const retryAfterMs =
+            typeof c.details.retryAfterMs === 'number'
+              ? c.details.retryAfterMs
+              : typeof c.details.retryAfterSeconds === 'number'
+                ? c.details.retryAfterSeconds * 1000
+                : null;
+          const wait =
+            retryable && t < cfg.maxRetries ? backoffMs(t, cfg.retry, retryAfterMs) : null;
+          await this.record(input, attempt, p, null, {
+            status: 'error',
+            latencyMs: Date.now() - started,
+            error: { ...errorToJson(c), try: t + 1, model, retryInMs: wait },
+          });
+          log.warn(
+            {
+              try: t + 1,
+              model,
+              status: c.details.status ?? null,
+              requestId: c.details.requestId ?? null,
+              body: c.details.body ?? null,
+              retryInMs: wait,
+            },
+            'llm call failed',
+          );
+          if (!retryable) throw c;
+          last = c;
+          if (this.health && (await this.health.failure(errorDetails(c))))
+            throw new ProviderUnavailableError(
+              cfg.provider,
+              cfg.breaker.cooldownSeconds,
+              errorDetails(c),
+            );
+          if (wait !== null) {
+            await this.event(
+              input,
+              `${text(c.details.userMessage) || c.message}, повтор через ${Math.ceil(wait / 1000)} с`,
+            );
+            await sleep(wait, input.signal);
+          }
+        }
+      }
+    }
+    // Every retry (and the fallback model) failed. The breaker opens only after
+    // LLM_BREAKER_THRESHOLD failures in a row; until then the queue retries the run.
+    throw last ?? new Error('unreachable');
+  }
+
+  /**
+   * «Проверить провайдера»: one tiny request (classifier model, a few output tokens) through the
+   * budget, logged like any call. Closes the breaker on success.
+   */
+  async probe(brandId: string): Promise<{ ok: boolean; message: string; latencyMs: number }> {
+    const cfg = this.deps.config;
+    const who = PROVIDER_LABEL[cfg.provider] ?? cfg.provider;
+    if (cfg.provider === 'mock')
+      return { ok: true, message: 'mock: внешний провайдер не используется', latencyMs: 0 };
+    const model = cfg.models.classifier;
+    const params: LlmRequest = {
+      model,
+      max_tokens: 8,
+      messages: [{ role: 'user', content: 'ping' }],
+    };
+    const reservation = await reserveCost(this.deps.db, this.deps.budget, {
+      brandId,
+      taskId: null,
+      runId: null,
+      agent: 'probe',
+      kind: 'llm',
+      provider: cfg.provider,
+      model,
+      estimateUsd: round8(
+        estimateMaxLlmCost(this.deps.pricing, model, 20, 8) * cfg.costSafetyFactor,
+      ),
+      idempotencyKey: `cost:probe:${randomUUID()}`,
+    });
+    const started = Date.now();
+    const ctx = { brandId, taskId: null, runId: null, agent: 'probe', promptVersion: 'probe' };
+    const input = {
+      ctx,
+      model,
+      system: [],
+      prompt: 'ping',
+      schema: z.unknown(),
+      idempotencyKey: 'probe',
+    };
+    try {
+      const res = await this.deps.transport.create(params, {
+        timeout: Math.min(cfg.timeoutMs, 30_000),
+      });
+      const latencyMs = Date.now() - started;
+      const cost = costOfResponse(this.deps.pricing, model, res);
+      await finalizeCost(this.deps.db, reservation.id, {
+        costUsd: round8(cost.usd * cfg.costSafetyFactor),
+        rawCostUsd: cost.usd,
+        model,
+        estimated: cost.estimated,
+        inputTokens: cost.totals.input,
+        outputTokens: cost.totals.output,
+      });
+      await this.record(input, 1, params, res, {
+        status: 'ok',
+        latencyMs,
+        costUsd: cost.usd,
+        servedModel: res.model,
+        stopReason: res.stop_reason,
+        totals: cost.totals,
+      });
+      await this.health?.success();
+      return {
+        ok: true,
+        message: `${who} отвечает: модель ${res.model}, ${latencyMs} мс`,
+        latencyMs,
+      };
+    } catch (err) {
+      await releaseCost(this.deps.db, reservation.id);
+      const c = classifyLlmError(err, cfg.provider);
+      const latencyMs = Date.now() - started;
+      await this.record(input, 1, params, null, {
+        status: 'error',
+        latencyMs,
+        error: errorToJson(c),
+      });
+      if (c instanceof TransientError) await this.health?.failure(errorDetails(c));
+      const d = c.details;
+      return {
+        ok: false,
+        message: `${text(d.userMessage) || describeProviderError(cfg.provider, null)}${text(d.requestId) ? `, request ${text(d.requestId)}` : ''}${text(d.body) ? `: ${text(d.body).slice(0, 200)}` : ''}`,
+        latencyMs,
+      };
+    }
+  }
+
+  /** «Что происходит сейчас»: a retry is visible to the owner (best effort, never throws). */
+  private async event(input: StructuredCallInput<unknown>, message: string) {
+    await this.deps.db
+      .insert(schema.agentEvents)
+      .values({
+        brandId: input.ctx.brandId,
+        agent: input.ctx.agent,
+        taskId: input.ctx.taskId,
+        runId: input.ctx.runId,
+        kind: 'retry',
+        text: message,
+      })
+      .catch((err: unknown) =>
+        this.deps.logger.warn({ err: errorToJson(err) }, 'retry event not saved'),
+      );
   }
 
   private async record(

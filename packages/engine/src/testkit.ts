@@ -115,6 +115,10 @@ export function llmConfig(overrides: Partial<LlmConfig> = {}): LlmConfig {
     rateLimit: { perMinute: 0, perHour: 0 },
     // 1 keeps cost assertions exact; the safety factor has its own tests.
     costSafetyFactor: 1,
+    retry: { baseMs: 1, maxMs: 5 },
+    breaker: { threshold: 4, cooldownSeconds: 60 },
+    providerWaitMaxMinutes: 60,
+    fallbackModel: null,
     ...overrides,
   };
 }

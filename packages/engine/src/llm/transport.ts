@@ -19,10 +19,10 @@ export interface LlmTransport {
 
 export function createAnthropicTransport(config: LlmConfig): LlmTransport {
   if (!config.apiKey) throw new PermanentError('missing_api_key', 'ANTHROPIC_API_KEY is not set');
-  // The SDK already retries 408/409/429/5xx and connection errors with backoff.
+  // Retries are done by LlmClient (same backoff, logging and circuit breaker for every provider).
   const client = new Anthropic({
     apiKey: config.apiKey,
-    maxRetries: config.maxRetries,
+    maxRetries: 0,
     timeout: config.timeoutMs,
   });
   return {
@@ -92,10 +92,76 @@ export function createLlmTransport(config: LlmConfig): LlmTransport {
   );
 }
 
-/** Retry-After (seconds or HTTP date) / retry-after-ms from a 429 or 503, in milliseconds. */
+export const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: 'Anthropic',
+  tokenharbor: 'Token Harbor',
+  mock: 'mock',
+};
+
+/** What an HTTP status means, in words for the owner. */
+const STATUS_MEANING: Record<number, string> = {
+  408: 'таймаут запроса',
+  409: 'конфликт запросов',
+  429: 'лимит запросов',
+  500: 'внутренняя ошибка сервера',
+  502: 'шлюз не получил ответ от модели',
+  503: 'сервис недоступен или перегружен',
+  504: 'шлюз не дождался ответа модели',
+  529: 'модель перегружена',
+};
+
+/** Keys, tokens and long secrets never reach logs or the database. */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{6,}/g, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(
+      /(api[-_]?key|token|authorization)(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
+      '$1$2[redacted]',
+    );
+}
+
+/** Facts about a failed HTTP call for logs and llm_calls: status, request id, body excerpt. */
+export function errorFacts(err: unknown): {
+  status: number | null;
+  requestId: string | null;
+  body: string | null;
+} {
+  if (!(err instanceof Anthropic.APIError)) return { status: null, requestId: null, body: null };
+  const h = (err as { headers?: Headers | null }).headers;
+  const requestId =
+    (err as { requestID?: string | null }).requestID ??
+    h?.get('request-id') ??
+    h?.get('x-request-id') ??
+    null;
+  // The SDK puts the status in front of the message ("502 <html>..."): drop it, we keep it apart.
+  const raw =
+    err.error && typeof err.error === 'object'
+      ? JSON.stringify(err.error)
+      : (err.message ?? '').replace(/^\d{3}\s+/, '');
+  const body = redactSecrets(
+    raw
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  ).slice(0, 300);
+  return {
+    status: typeof err.status === 'number' ? err.status : null,
+    requestId,
+    body: body || null,
+  };
+}
+
+/** "Token Harbor вернул 502 (шлюз не получил ответ от модели)". */
+export function describeProviderError(provider: string, status: number | null): string {
+  const who = PROVIDER_LABEL[provider] ?? provider;
+  if (status === null) return `${who}: нет соединения или таймаут`;
+  return `${who} вернул ${status}${STATUS_MEANING[status] ? ` (${STATUS_MEANING[status]})` : ''}`;
+}
+
+/** Retry-After (seconds or HTTP date) / retry-after-ms from any error response, in milliseconds. */
 export function retryAfterMsOf(err: unknown): number | null {
-  if (!(err instanceof Anthropic.APIError) || !(err.status === 429 || err.status === 503))
-    return null;
+  if (!(err instanceof Anthropic.APIError)) return null;
   const h = (err as { headers?: Headers | null }).headers;
   if (!h) return null;
   const ms = Number(h.get('retry-after-ms'));
@@ -112,7 +178,13 @@ export function retryAfterMsOf(err: unknown): number | null {
  * Maps SDK errors to our taxonomy once the SDK's own retries are exhausted:
  * transient -> the queue retries the job later; permanent -> the run fails now.
  */
-export function classifyLlmError(err: unknown): TransientError | PermanentError {
+export function classifyLlmError(
+  err: unknown,
+  provider = 'anthropic',
+): TransientError | PermanentError {
+  const facts = errorFacts(err);
+  const human = describeProviderError(provider, facts.status);
+  const extra = { ...facts, provider, userMessage: human };
   if (err instanceof Anthropic.APIUserAbortError) {
     return new TransientError(
       'llm_aborted',
@@ -128,7 +200,7 @@ export function classifyLlmError(err: unknown): TransientError | PermanentError 
     return new TransientError(
       'llm_network',
       `LLM network error: ${err.message}`,
-      {},
+      { ...extra },
       { cause: err },
     );
   }
@@ -139,15 +211,16 @@ export function classifyLlmError(err: unknown): TransientError | PermanentError 
       ms !== null
         ? `LLM rate limited (429), retry after ${Math.ceil(ms / 1000)}s`
         : 'LLM rate limited (429)',
-      { status: 429, ...(ms !== null ? { retryAfterSeconds: Math.ceil(ms / 1000) } : {}) },
+      { ...extra, ...(ms !== null ? { retryAfterSeconds: Math.ceil(ms / 1000) } : {}) },
       { cause: err },
     );
   }
   if (err instanceof Anthropic.InternalServerError) {
+    const ms = retryAfterMsOf(err);
     return new TransientError(
       'llm_server_error',
-      `LLM server error ${err.status}`,
-      { status: err.status },
+      `LLM server error ${err.status}${facts.requestId ? ` (request ${facts.requestId})` : ''}${facts.body ? `: ${facts.body.slice(0, 120)}` : ''}`,
+      { ...extra, ...(ms !== null ? { retryAfterMs: ms } : {}) },
       { cause: err },
     );
   }
@@ -159,18 +232,19 @@ export function classifyLlmError(err: unknown): TransientError | PermanentError 
       status === 529 ||
       (status !== undefined && status >= 500)
     ) {
+      const ms = retryAfterMsOf(err);
       return new TransientError(
         'llm_server_error',
-        `LLM error ${status}`,
-        { status },
+        `LLM error ${status}${facts.body ? `: ${facts.body.slice(0, 120)}` : ''}`,
+        { ...extra, ...(ms !== null ? { retryAfterMs: ms } : {}) },
         { cause: err },
       );
     }
     // 400 invalid request, 401 auth, 403 permission, 404 model not found, 413 too large...
     return new PermanentError(
       'llm_request_rejected',
-      `LLM rejected the request (${status}): ${err.message}`,
-      { status },
+      `LLM rejected the request (${status}): ${redactSecrets(err.message).slice(0, 300)}`,
+      { ...extra },
       { cause: err },
     );
   }

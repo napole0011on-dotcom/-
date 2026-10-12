@@ -11,3 +11,4 @@ export * from './artifacts.js';
 export * from './reconcile.js';
 export * from './llm/rate-limiter.js';
 export * from './media.js';
+export * from './llm/health.js';
