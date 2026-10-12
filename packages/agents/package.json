@@ -23,6 +23,7 @@
     "@cms/db": "workspace:*",
     "@cms/engine": "workspace:*",
     "@cms/providers": "workspace:*",
+    "csv-parse": "6.1.0",
     "docx": "9.5.1",
     "pdfmake": "0.3.11",
     "yaml": "^2.9.1",

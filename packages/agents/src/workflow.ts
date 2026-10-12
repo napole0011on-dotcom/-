@@ -10,7 +10,14 @@ import {
   type TaskStatus,
 } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
-import type { ObjectStorage, SttProvider } from '@cms/providers';
+import type { MailSender, ObjectStorage, SttProvider } from '@cms/providers';
+import {
+  campaignReport,
+  confirmCampaign,
+  runCampaign,
+  sendTestEmail,
+  type MailerDeps,
+} from './tools/mailer.js';
 import { cb } from './telegram-callbacks.js';
 import {
   MEDIA_TOOL,
@@ -105,7 +112,9 @@ export type RunInput =
     }
   | { kind: 'export' }
   /** Tool step: voice/video -> text (service task kind "media"). */
-  | { kind: 'transcribe'; transcriptId: string };
+  | { kind: 'transcribe'; transcriptId: string }
+  /** Tool step: sending a confirmed mailing in batches (service task kind "mailing"). */
+  | { kind: 'mail_send'; campaignId: string };
 
 /** Files the owner attached to a brief (transcripts of voice messages and videos). */
 export interface TaskAttachment {
@@ -140,6 +149,8 @@ export interface WorkflowDeps {
   storage?: ObjectStorage;
   /** Speech recognition for voice/video tool steps. */
   stt?: SttProvider;
+  /** Email sender (mock until the owner's "ok"). */
+  mail?: MailSender;
 }
 
 export interface DecisionResult {
@@ -475,8 +486,50 @@ export class Workflow {
         return this.exportStep(run, task);
       case 'transcribe':
         return this.transcribeStep(run, rc.signal);
+      case 'mail_send':
+        return this.mailStep(run, rc.signal);
     }
   };
+
+  /** Mailer dependencies for the panel (same sender and budget as the worker). */
+  mailer(): MailerDeps {
+    if (!this.d.mail)
+      throw new PermanentError('mail_not_configured', 'Отправка писем не настроена');
+    return {
+      db: this.d.db,
+      config: this.d.config,
+      sender: this.d.mail,
+      budget: this.budget,
+      logger: this.d.logger,
+    };
+  }
+
+  sendTestEmail(campaignId: string, actor: Actor) {
+    return sendTestEmail(this.mailer(), campaignId, actor);
+  }
+
+  /** Gate: the owner's explicit «Отправить N адресам». */
+  confirmCampaign(campaignId: string, recipients: number, actor: Actor) {
+    return confirmCampaign(
+      { ...this.mailer(), enqueue: this.d.enqueue },
+      campaignId,
+      recipients,
+      actor,
+    );
+  }
+
+  private async mailStep(run: Run, signal: AbortSignal) {
+    const campaignId = (run.input as { campaignId: string }).campaignId;
+    const report = await runCampaign(this.mailer(), run, signal);
+    await this.once(`${run.id}:mail-report`, () =>
+      this.d.channel
+        .send({
+          text: `✉️ Рассылка завершена: отправлено ${report.sent}, ошибок ${report.failed}, остановлено ${report.stopped}, исключено (отписка) ${report.suppressed}.`,
+        })
+        .then(() => undefined),
+    );
+    return { campaignId, ...(await campaignReport(this.d.db, campaignId)) };
+  }
 
   /** Voice/video -> text; the owner gets the text in Telegram when it came from there. */
   private async transcribeStep(run: Run, signal: AbortSignal) {

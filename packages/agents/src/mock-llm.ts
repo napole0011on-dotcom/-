@@ -20,6 +20,7 @@ export class MockLlmTransport implements LlmTransport {
     else if (title === 'CriticOutput') body = mockCritic(prompt);
     else if (title === 'ImageBriefs') body = mockImages(prompt);
     else if (title === 'KpDraft') body = mockKp(prompt);
+    else if (title === 'Agent_mailer_draft') body = mockMail();
     else body = schema ? mockFromSchema(schema) : {};
     return Promise.resolve({
       id: `mock_${this.calls}`,
@@ -137,6 +138,21 @@ export function mockFromSchema(
       return text.length >= minLength ? text : text.padEnd(minLength, '.');
     }
   }
+}
+
+/** A plausible email with the only allowed merge fields and the unsubscribe link. */
+function mockMail() {
+  return {
+    subject: '[MOCK] Осеннее меню уже в кофейне',
+    preheader: '[MOCK] Тыквенный латте и десерт с грушей — до конца ноября',
+    body_text:
+      '[MOCK] Привет, {{name}}!\n\nВ кофейне появилось осеннее меню: тыквенный латте и десерт с грушей.\nЗаходите в субботу на дегустацию.\n\nОтписаться от писем: {{unsubscribe_url}}',
+    body_html:
+      '<p>[MOCK] Привет, {{name}}!</p><p>В кофейне появилось осеннее меню: тыквенный латте и десерт с грушей.</p><p>Заходите в субботу на дегустацию.</p><p><a href="{{unsubscribe_url}}">Отписаться от писем</a></p>',
+    short_version: '[MOCK] Осеннее меню уже в кофейне — заходите на дегустацию в субботу.',
+    merge_fields_used: ['name', 'unsubscribe_url'],
+    spam_risk_notes: [],
+  };
 }
 
 /** A KP that picks the first catalog positions (ids read from the catalog block of the prompt). */
