@@ -444,10 +444,16 @@ export const agentDefinitions = pgTable(
     name: text('name').notNull(),
     role: text('role').notNull(),
     description: text('description').notNull().default(''),
-    /** human | code | constructor | tool */
+    /** human (Бриф, Вы) | custom (every agent: made by the owner or copied from the library) */
     kind: text('kind').notNull(),
-    /** active | draft | planned */
+    /** active | draft */
     status: text('status').notNull().default('active'),
+    /** planner | reviewer | worker | acceptor — what the engine uses the agent for (null: human). */
+    teamRole: text('team_role'),
+    /** Code behaviour the agent runs with (copywriting, image_generate, stt_voice, ...); null = LLM by fields. */
+    capability: text('capability'),
+    /** Deleted by the owner: kept for history (runs, prompts, audit show its name), hidden everywhere else. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     /** Color token name (violet, indigo, ...), assigned round-robin and kept. */
     color: text('color').notNull(),
     icon: text('icon').notNull(),
@@ -742,8 +748,20 @@ export const agentTemplates = pgTable(
     version: integer('version').notNull(),
     /** TemplateBody: name, role, prompt, fields, criteria — never keys or tokens. */
     body: jsonb('body').notNull(),
+    /** file (config/library) | panel | import | agent — sync never overwrites the owner's edits. */
+    source: text('source').notNull().default('panel'),
+    /** Deleted by the owner (all versions of the slug); library:sync does not bring it back. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdBy: text('created_by').notNull(),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('agent_templates_uq').on(t.brandId, t.slug, t.version)],
 );
+
+/** Liveness of the queue worker (the bot process): the panel warns when nobody runs tasks. */
+export const workerHeartbeats = pgTable('worker_heartbeats', {
+  worker: text('worker').primaryKey(),
+  pid: integer('pid').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  beatAt: timestamp('beat_at', { withTimezone: true }).notNull(),
+});
