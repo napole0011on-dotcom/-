@@ -53,6 +53,10 @@ try {
 
   // 2. Clicks: the output point, then the receiver; a refused target explains why.
   await dropLink(page, 'critic', 'image');
+  await dropLink(page, 'image', 'critic'); // would make a cycle on a board used by hand
+  await page.reload();
+  await page.locator('.react-flow__node[data-id="critic"]').waitFor();
+  await page.waitForTimeout(500);
   await page.locator('.react-flow__node[data-id="critic"] .react-flow__handle.source').click();
   await page.getByText(/нажмите на агента, которому передавать результат/).waitFor();
   await page.locator('.react-flow__node[data-id="ceo"]').click();

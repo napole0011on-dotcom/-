@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, setCsrfToken, setUnauthorizedHandler, type LlmStatus, type SessionInfo } from './api';
 import { PROVIDER_LABEL, ROLE_LABEL, actorLabel, dateTime } from './format';
@@ -137,8 +138,14 @@ function StopAllButton() {
   if (!data) return null;
   if (data.controls.allPaused) {
     return (
-      <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
+      <Button
+        variant="primary"
+        busy={resume.isPending}
+        onClick={() => resume.mutate()}
+        title="Продолжить всё"
+      >
         <Icon name="play" /> <span className="label-wide">Продолжить всё</span>
+        <span className="label-short">Продолжить</span>
       </Button>
     );
   }
@@ -147,6 +154,7 @@ function StopAllButton() {
       label={
         <>
           <Icon name="stop" /> <span className="label-wide">Остановить всё</span>
+          <span className="label-short">Стоп</span>
         </>
       }
       variant="danger"
@@ -272,45 +280,48 @@ function Header({ path, onLogout }: { path: string; onLogout: () => void }) {
           </Button>
         </div>
       </div>
-      {menu && (
-        <div
-          className="mobile-nav"
-          onMouseDown={(e) => e.target === e.currentTarget && setMenu(false)}
-        >
-          <div className="mobile-nav-panel" role="dialog" aria-label="Меню">
-            <div className="row between">
-              <span className="logo">
-                Content<b>Agents</b>
-              </span>
-              <Button
-                variant="ghost"
-                className="btn-icon"
-                aria-label="Закрыть меню"
-                onClick={() => setMenu(false)}
-              >
-                <Icon name="close" />
+      {menu &&
+        // A portal: the sticky header (backdrop-filter) would otherwise clip the fixed drawer.
+        createPortal(
+          <div
+            className="mobile-nav"
+            onMouseDown={(e) => e.target === e.currentTarget && setMenu(false)}
+          >
+            <div className="mobile-nav-panel" role="dialog" aria-label="Меню">
+              <div className="row between">
+                <span className="logo">
+                  Content<b>Agents</b>
+                </span>
+                <Button
+                  variant="ghost"
+                  className="btn-icon"
+                  aria-label="Закрыть меню"
+                  onClick={() => setMenu(false)}
+                >
+                  <Icon name="close" />
+                </Button>
+              </div>
+              <nav aria-label="Разделы">
+                {nav.map((n) => (
+                  <Link key={n.to} to={n.to} className={n.active ? 'active' : ''}>
+                    <span className="row">
+                      <Icon name={n.icon} /> {n.label}
+                    </span>
+                    {n.badge ? <span className="badge">{n.badge}</span> : null}
+                  </Link>
+                ))}
+              </nav>
+              <Link to="/tasks/new" className="btn btn-primary">
+                <Icon name="plus" /> Новая задача
+              </Link>
+              <StopAllButton />
+              <Button variant="ghost" onClick={onLogout}>
+                <Icon name="logout" /> Выйти
               </Button>
             </div>
-            <nav aria-label="Разделы">
-              {nav.map((n) => (
-                <Link key={n.to} to={n.to} className={n.active ? 'active' : ''}>
-                  <span className="row">
-                    <Icon name={n.icon} /> {n.label}
-                  </span>
-                  {n.badge ? <span className="badge">{n.badge}</span> : null}
-                </Link>
-              ))}
-            </nav>
-            <Link to="/tasks/new" className="btn btn-primary">
-              <Icon name="plus" /> Новая задача
-            </Link>
-            <StopAllButton />
-            <Button variant="ghost" onClick={onLogout}>
-              <Icon name="logout" /> Выйти
-            </Button>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </header>
   );
 }

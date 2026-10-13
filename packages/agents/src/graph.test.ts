@@ -139,4 +139,18 @@ describe('auto layout', () => {
     const spot = freeSpot(all);
     expect(all.some((p) => overlaps(p, spot, 0))).toBe(false);
   });
+
+  it('unlinked cards: agents, then tools, then planned agents — each group from a new row', () => {
+    const nodes = [
+      ...NODES,
+      { id: 'draft1', name: 'D', kind: 'constructor' as const, status: 'draft' as const },
+      { id: 'tool1', name: 'T', kind: 'tool' as const, status: 'active' as const },
+      { id: 'plan1', name: 'P', kind: 'constructor' as const, status: 'planned' as const },
+    ];
+    const pos = autoLayout(nodes, sys());
+    const flowBottom = Math.max(pos.ceo!.y, pos.copywriter!.y, pos.me!.y);
+    expect(pos.draft1!.y).toBeGreaterThan(flowBottom);
+    expect(pos.tool1!.y).toBeGreaterThan(pos.draft1!.y);
+    expect(pos.plan1!.y).toBeGreaterThan(pos.tool1!.y);
+  });
 });

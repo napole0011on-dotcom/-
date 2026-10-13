@@ -12,7 +12,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MarkerType,
   MiniMap,
   ReactFlow,
@@ -122,25 +121,23 @@ function WorkspaceInner() {
       if (!ns.length || !el) return;
       const b = getNodesBounds(ns);
       const pad = 24;
-      const z = Math.min(
-        1,
-        (el.clientWidth - 2 * pad) / b.width,
-        (el.clientHeight - 2 * pad) / b.height,
-      );
-      if (z >= MIN_READABLE_ZOOM) void rf.fitView({ padding: 0.06, maxZoom: 1, duration });
-      else
-        void rf.setViewport(
-          {
-            x: pad - b.x * MIN_READABLE_ZOOM,
-            y: pad - b.y * MIN_READABLE_ZOOM,
-            zoom: MIN_READABLE_ZOOM,
-          },
-          { duration },
-        );
+      // Cards never go under the zoom buttons (top right) or the minimap (bottom right).
+      const right = pad;
+      const bottom = pad + (el.querySelector('.react-flow__minimap') ? 100 : 0);
+      const w = el.clientWidth - pad - right;
+      const h = el.clientHeight - pad - bottom;
+      const fit = Math.min(1, w / b.width, h / b.height);
+      const z = Math.max(fit, MIN_READABLE_ZOOM);
+      // Fits: centred in the free area; too big: readable zoom from the top left (Бриф → CEO).
+      const x = fit >= MIN_READABLE_ZOOM ? pad + (w - b.width * z) / 2 : pad;
+      const y = fit >= MIN_READABLE_ZOOM ? pad + (h - b.height * z) / 2 : pad;
+      void rf.setViewport({ x: x - b.x * z, y: y - b.y * z, zoom: z }, { duration });
     },
     [rf],
   );
   const fitted = useRef(false);
+  // The minimap covers part of the board: shown only on request.
+  const [showMap, setShowMap] = useState(false);
 
   const addLink = useAction((v: { from: string; to: string }) =>
     api.post('/api/workspace/links', v),
@@ -476,7 +473,8 @@ function WorkspaceInner() {
         </label>
         <select
           id="task-picker"
-          style={{ width: 'auto', maxWidth: 360 }}
+          className="task-picker"
+          title={openTasks.find((t) => t.id === taskId)?.title ?? 'Все задачи'}
           value={taskId ?? ''}
           onChange={(e) => {
             stopDemo();
@@ -564,22 +562,41 @@ function WorkspaceInner() {
       </div>
       <div className="ws-layout">
         <div>
+          <div className="ws-toolbar">
+            <Button className="btn-sm" onClick={() => void fitBoard()}>
+              <Icon name="fit" /> Вписать
+            </Button>
+            <Button
+              className="btn-sm"
+              aria-label="Уменьшить"
+              title="Уменьшить"
+              onClick={() => void rf.zoomOut({ duration: 150 })}
+            >
+              −
+            </Button>
+            <Button
+              className="btn-sm"
+              aria-label="Увеличить"
+              title="Увеличить"
+              onClick={() => void rf.zoomIn({ duration: 150 })}
+            >
+              +
+            </Button>
+            <Button className="btn-sm" aria-pressed={showMap} onClick={() => setShowMap((v) => !v)}>
+              {showMap ? 'Скрыть карту' : 'Карта'}
+            </Button>
+            <Button
+              className="btn-sm"
+              busy={autoLayout.isPending}
+              onClick={() => autoLayout.mutate(undefined)}
+            >
+              <Icon name="layout" /> Авторасстановка
+            </Button>
+            <Button className="btn-sm" onClick={() => navigate('/agents/new')}>
+              <Icon name="plus" /> Агент
+            </Button>
+          </div>
           <div className="ws-board">
-            <div className="ws-toolbar">
-              <Button className="btn-sm" onClick={() => void fitBoard()}>
-                <Icon name="fit" /> Вписать
-              </Button>
-              <Button
-                className="btn-sm"
-                busy={autoLayout.isPending}
-                onClick={() => autoLayout.mutate(undefined)}
-              >
-                <Icon name="layout" /> Авторасстановка
-              </Button>
-              <Button className="btn-sm" onClick={() => navigate('/agents/new')}>
-                <Icon name="plus" /> Агент
-              </Button>
-            </div>
             <ReactFlow<BoardNode, BoardEdge>
               nodes={nodes}
               edges={edges}
@@ -626,8 +643,7 @@ function WorkspaceInner() {
               }}
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.4} />
-              <Controls showInteractive={false} position="top-right" />
-              {data.nodes.length >= 8 && (
+              {showMap && (
                 <MiniMap
                   pannable
                   zoomable
@@ -648,10 +664,10 @@ function WorkspaceInner() {
                 </button>
               </div>
             )}
-            <div className="ws-hint">
-              Связь: потяните точку справа у агента к другому или нажмите на точку, затем на
-              получателя. Клик по линии — удалить.
-            </div>
+          </div>
+          <div className="ws-hint">
+            Связь: потяните точку справа у агента к другому или нажмите на точку, затем на
+            получателя. Клик по линии — удалить.
           </div>
           <section className="card feed" aria-live="polite">
             <div className="row between" style={{ marginBottom: 'var(--s-2)' }}>

@@ -223,19 +223,20 @@ export function linkActive(nodes: GraphNode[], link: Pick<GraphLink, 'from' | 't
 
 export const NODE_W = 220;
 /** Every card has this fixed height (CSS .ws-node), so the layout never overlaps. */
-export const NODE_H = 150;
+export const NODE_H = 164;
 export const GAP_X = 90;
 export const GAP_Y = 40;
-/** Unlinked agents (tools, drafts, planned) are laid out in rows of this many under the flow. */
+/** Unlinked cards are laid out in rows of this many under the flow. */
 const SPARE_PER_ROW = 6;
 
 /**
  * Layered layout, left to right, without overlaps: Бриф → CEO → workers → Critic → SEO → Вы.
  * Column = longest path (sources without inputs start next to Бриф); "Вы" is always last.
- * Agents without links go to separate rows below the flow.
+ * Cards without links go below the flow, each group from a new row: agents, then tools, then
+ * planned agents.
  */
 export function autoLayout(
-  nodes: Pick<GraphNode, 'id'>[],
+  nodes: (Pick<GraphNode, 'id'> & Partial<Pick<GraphNode, 'kind' | 'status'>>)[],
   links: Pick<GraphLink, 'from' | 'to'>[],
 ): Record<string, { x: number; y: number }> {
   const ids = new Set(nodes.map((n) => n.id));
@@ -274,14 +275,23 @@ export function autoLayout(
       out[id] = { x: l * stepX, y: Math.round(offset + i * stepY) };
     });
   }
-  const spare = nodes.filter((n) => !linked.has(n.id)).map((n) => n.id);
+  const spare = nodes.filter((n) => !linked.has(n.id));
+  const groups = [
+    spare.filter((n) => n.kind !== 'tool' && n.status !== 'planned'),
+    spare.filter((n) => n.kind === 'tool'),
+    spare.filter((n) => n.kind !== 'tool' && n.status === 'planned'),
+  ];
+  let row = 0;
   const top = tallest * stepY + GAP_Y;
-  spare.forEach((id, i) => {
-    out[id] = {
-      x: (1 + (i % SPARE_PER_ROW)) * stepX,
-      y: top + Math.floor(i / SPARE_PER_ROW) * stepY,
-    };
-  });
+  for (const g of groups) {
+    g.forEach((n, i) => {
+      out[n.id] = {
+        x: (1 + (i % SPARE_PER_ROW)) * stepX,
+        y: top + (row + Math.floor(i / SPARE_PER_ROW)) * stepY,
+      };
+    });
+    row += Math.ceil(g.length / SPARE_PER_ROW);
+  }
   return out;
 }
 

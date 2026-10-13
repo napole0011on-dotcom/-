@@ -356,9 +356,15 @@ summary {
     display: none;
   }
 }
+.label-short {
+  display: none;
+}
 @media (max-width: 1440px) {
   .header-right .label-wide {
     display: none;
+  }
+  .header-right .label-short {
+    display: inline;
   }
 }
 @media (max-width: 1240px) {
@@ -1128,23 +1134,15 @@ label {
   overflow: hidden;
 }
 .ws-toolbar {
-  position: absolute;
-  z-index: 5;
-  left: var(--s-3);
-  top: var(--s-3);
+  /* Above the board, not on it: it never covers a card. */
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-.ws-toolbar .btn {
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: blur(6px);
+  align-items: center;
+  margin-bottom: var(--s-2);
 }
 .ws-hint {
-  position: absolute;
-  z-index: 5;
-  left: var(--s-3);
-  bottom: var(--s-3);
+  margin-top: var(--s-2);
   font-size: var(--fs-xs);
   color: var(--text-2);
   background: color-mix(in srgb, var(--surface) 85%, transparent);
@@ -1156,7 +1154,7 @@ label {
   --agent: var(--c-indigo);
   /* Fixed size = NODE_W x NODE_H in graph.ts: the layout can never put cards on each other. */
   width: 220px;
-  height: 150px;
+  height: 164px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -1215,7 +1213,7 @@ label {
 .ws-node-task {
   font-size: var(--fs-xs);
   color: var(--text-2);
-  margin-top: 8px;
+  margin-top: 2px;
   min-height: 1.45em;
 }
 .ws-node-metrics {
@@ -1223,8 +1221,9 @@ label {
   justify-content: space-between;
   font-size: var(--fs-xs);
   color: var(--text-2);
-  margin-top: 8px;
-  padding-top: 8px;
+  /* Always at the bottom of the card: all cards have the same height. */
+  margin-top: auto;
+  padding-top: 6px;
   border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
@@ -1652,4 +1651,13 @@ label {
 }
 .run-feed .run-error span {
   color: var(--danger);
+}
+
+/* Task picker above the board: long titles are cut, the full one is in the tooltip. */
+.task-picker {
+  width: auto;
+  max-width: min(360px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
