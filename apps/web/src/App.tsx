@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, Suspense, lazy, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, setCsrfToken, setUnauthorizedHandler, type LlmStatus, type SessionInfo } from './api';
@@ -20,6 +20,11 @@ import { RunPage } from './pages/RunPage';
 import { Spend } from './pages/Spend';
 import { TaskPage } from './pages/TaskPage';
 import { Tasks } from './pages/Tasks';
+
+// The block editor uses React Flow: a separate chunk, like the board.
+const BlocksPage = lazy(() =>
+  import('./pages/BlocksPage').then((m) => ({ default: m.BlocksPage })),
+);
 
 function modelsLabel(s: LlmStatus): string {
   const names = new Set(Object.values(s.models));
@@ -337,6 +342,13 @@ function Page({ path }: { path: string }) {
   if (path === '/mailing') return <Mailing />;
   const transcript = matchRoute('/transcripts/:id', path);
   if (transcript) return <TranscriptPage key={transcript.id} id={transcript.id!} />;
+  const blocks = matchRoute('/agents/:id/blocks', path);
+  if (blocks)
+    return (
+      <Suspense fallback={<Loading rows={2} />}>
+        <BlocksPage key={blocks.id} id={blocks.id!} />
+      </Suspense>
+    );
   const builder = matchRoute('/agents/:id/build', path);
   if (builder) return <AgentBuilder key={builder.id} id={builder.id!} />;
   const task = matchRoute('/tasks/:id', path);

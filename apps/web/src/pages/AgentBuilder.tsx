@@ -77,6 +77,9 @@ export function AgentBuilder({ id }: { id: string }) {
           </div>
           <Pill tone={st.tone}>{st.label}</Pill>
         </div>
+        <Link to={`/agents/${id}/blocks`} className="btn">
+          Собрать из блоков
+        </Link>
       </div>
       <Readiness s={s} />
       <section className="card stack">

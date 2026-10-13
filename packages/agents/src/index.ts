@@ -33,3 +33,5 @@ export * from './agents/kp.js';
 export * from './tools/catalog.js';
 export * from './tools/kp-render.js';
 export * from './tools/mailer.js';
+export * from './compositions.js';
+export * from './blocks.js';

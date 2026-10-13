@@ -953,6 +953,9 @@ function SidePanel({
           <Button variant="primary" onClick={() => navigate(`/agents/${n.id}/build`)}>
             <Icon name="settings" /> {n.status === 'active' ? 'Конструктор' : 'Собрать агента'}
           </Button>
+          <Button onClick={() => navigate(`/agents/${n.id}/blocks`)}>
+            <Icon name="layout" /> Блоки
+          </Button>
         </div>
       )}
       {seo && n.id !== 'seo' && (

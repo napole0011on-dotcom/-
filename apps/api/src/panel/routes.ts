@@ -18,6 +18,12 @@ import {
   saveLayout,
   type DecisionResult,
   type Workflow,
+  buildComposition,
+  checkComposition,
+  getComposition,
+  loadWorkspace,
+  rollbackComposition,
+  saveComposition,
 } from '@cms/agents';
 import type { ObjectStorage } from '@cms/providers';
 import type { EventHub } from './event-hub.js';
@@ -525,6 +531,46 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
       ),
     );
   });
+  // ---------------------------------------------------------------- agents from blocks
+  app.get<{ Params: { agent: string } }>('/api/agents/:agent/blocks', async (req, reply) => {
+    const agent = agentParam.safeParse(req.params.agent);
+    const view = agent.success ? await getComposition(d.db, brand(), agent.data) : null;
+    if (!agent.success || !view) return reply.code(404).send({ error: 'Нет такого агента' });
+    const ws = await loadWorkspace(d.db, brand());
+    const check = await checkComposition(d.db, brand(), agent.data, d.controls.allowedModels());
+    return {
+      ...view,
+      agent: ws.nodes.find((n) => n.id === agent.data),
+      models: d.controls.allowedModels(),
+      // Tools a result can be handed to (sources and the mailer are not linked from agents).
+      tools: ws.nodes
+        .filter((n) => n.kind === 'tool' && n.id === 'kp_render')
+        .map((n) => ({ id: n.id, name: n.name })),
+      agents: ws.nodes
+        .filter((n) => n.kind !== 'tool' && n.kind !== 'human' && n.id !== agent.data)
+        .filter((n) => !['ceo', 'critic'].includes(n.id))
+        .map((n) => ({ id: n.id, name: n.name, status: n.status })),
+      problems: check.ok ? [] : check.problems,
+    };
+  });
+  const compositionBody = z.object({
+    blocks: z.array(z.unknown()).max(40),
+    links: z.array(z.unknown()).max(80),
+  });
+  agentRoute('blocks', (a, req, reply) => {
+    const body = compositionBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () => saveComposition(d.db, brand(), a, body.data, ACTOR));
+  });
+  agentRoute('blocks/rollback', (a, req, reply) => {
+    const body = z.object({ version: z.number().int().min(1) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () => rollbackComposition(d.db, brand(), a, body.data.version, ACTOR));
+  });
+  agentRoute('blocks/build', (a, _r, reply) =>
+    control(reply, () => buildComposition(d.db, brand(), a, d.controls, ACTOR)),
+  );
+
   agentRoute('activate', (a, _r, reply) =>
     control(reply, () =>
       activateConstructorAgent(d.db, brand(), a, ACTOR, () => d.controls.release()),

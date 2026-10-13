@@ -76,6 +76,9 @@ packages/agents     агенты и сценарий
   src/prompt-store.ts  промпты в БД: syncPromptFiles(), активная версия, сохранение, откат (всё в audit_log)
   src/agent-test.ts    «Тест»: агент на примере брифа с mock-моделью, $0, черновик промпта; тест сохранённой
                        версии агента конструктора записывается в spec.lastTest (specHash + версия промпта)
+  src/blocks.ts        агенты из блоков (общий для API и браузера): типы блоков, порты, validateBlockLink,
+                       compileComposition → поля, критерии, промпт, модель, связи на доске
+  src/compositions.ts  версии состава (agent_compositions): сохранить, откатить, «Собрать в агента»
   src/graph.ts         связи как DAG: validateLink, системные связи, buildPipeline (порядок шагов), autoLayout
   src/workspace.ts     реестр узлов (agent_definitions), связи и раскладка в БД, всё через audit_log
   src/nodes.ts         контракт шага графа (NodeExecutor), артефакты node:<agent>:main
@@ -223,6 +226,11 @@ pnpm smoke:llm           # 2 реальных вызова через LLM_PROVID
 - Каждое решение диспетчера → audit_log (`route_decided`/`route_manual`) + событие `handoff`
   (`agent_events.payload`: to, mode, reasons, confidence). Вид `run_events` — те же события в терминах
   доски (start/handoff/done/error/wait). Промпт диспетчера в коде, метка `router@code#hash8`.
+- Агенты из блоков — только агенты конструктора. Каждое сохранение — новая версия, откат копирует старую
+  как новую (история не переписывается), всё в audit_log. «Собрать в агента» пишет в реестр через
+  `updateConstructorAgent`/`savePromptVersion`/`controls.setModel`/`addLink` — те же проверки, что в
+  конструкторе: изменение полей включённого агента возвращает его в черновик, включение — после теста на mock.
+  Код AutoGPT не используется (лицензия Polyform Shield).
 - Шаг плана (copy/rework/node/route), упавший окончательно, ставит задачу на паузу `step_failed:<runId>`
   (`RunDeps.stopOnFailure`), а не в `failed`; `continueTask()` создаёт новый запуск этого шага.
   План и экспорт падают как раньше.

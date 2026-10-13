@@ -1,3 +1,4 @@
+import type { Composition } from '@cms/agents/blocks';
 // HTTP client and response types of the panel API (apps/api/src/panel/routes.ts).
 
 export type TaskStatus =
@@ -474,6 +475,31 @@ export interface ActionResult {
   taskId?: string;
   /** Agent id after creating a constructor agent. */
   id?: string;
+  /** «Собрать в агента»: what to fix, or what did not fully work. */
+  problems?: string[];
+  warnings?: string[];
+  /** Blocks: the version just saved. */
+  version?: number;
+}
+
+/** Agents from blocks: the composition, its versions and the options of the blocks. */
+export interface BlocksData {
+  agentId: string;
+  version: number | null;
+  composition: Composition;
+  builtVersion: number | null;
+  versions: {
+    version: number;
+    note: string;
+    createdAt: string;
+    createdBy: string;
+    built: boolean;
+  }[];
+  agent: { id: string; name: string; kind: string; status: string; color: string; icon: string };
+  models: string[];
+  tools: { id: string; name: string }[];
+  agents: { id: string; name: string; status: string }[];
+  problems: string[];
 }
 
 export type NodeKind = 'human' | 'code' | 'constructor' | 'tool';

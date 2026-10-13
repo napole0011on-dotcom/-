@@ -16,6 +16,11 @@
       "@cms/source": "./src/graph.ts",
       "types": "./dist/graph.d.ts",
       "default": "./dist/graph.js"
+    },
+    "./blocks": {
+      "@cms/source": "./src/blocks.ts",
+      "types": "./dist/blocks.d.ts",
+      "default": "./dist/blocks.js"
     }
   },
   "dependencies": {

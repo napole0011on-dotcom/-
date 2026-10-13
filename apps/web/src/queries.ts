@@ -5,6 +5,7 @@ import {
   type AgentSettings,
   type LiveEvent,
   type RunEvent,
+  type BlocksData,
   type TaskPathData,
   type WorkspaceData,
   type Approvals,
@@ -69,6 +70,13 @@ export const useAgentSettings = (id: string) =>
   useQuery({
     queryKey: ['agent-settings', id],
     queryFn: () => api.get<AgentSettings>(`/api/agents/${id}/settings`),
+    refetchInterval: SLOW,
+  });
+
+export const useBlocks = (id: string) =>
+  useQuery({
+    queryKey: ['blocks', id],
+    queryFn: () => api.get<BlocksData>(`/api/agents/${id}/blocks`),
     refetchInterval: SLOW,
   });
 
