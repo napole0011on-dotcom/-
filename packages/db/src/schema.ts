@@ -512,8 +512,13 @@ export const agentEvents = pgTable(
     kind: text('kind').notNull(),
     text: text('text').notNull(),
     costUsd: usd('cost_usd'),
+    /** Extra data for the board and the replay: {to: [...], reason, confidence, artifactId}. */
+    payload: jsonb('payload'),
   },
-  (t) => [index('agent_events_brand_id_idx').on(t.brandId, t.id)],
+  (t) => [
+    index('agent_events_brand_id_idx').on(t.brandId, t.id),
+    index('agent_events_task_idx').on(t.taskId, t.id),
+  ],
 );
 
 /** Uploaded audio/video (Telegram voice, panel upload). The file itself lives in object storage. */
@@ -672,3 +677,30 @@ export const providerStatus = pgTable('provider_status', {
   openUntil: timestamp('open_until', { withTimezone: true }),
   updatedAt: updatedAt(),
 });
+
+/**
+ * Dispatcher decisions: after a step produced a result (identified by `fromSig`), to whom it
+ * goes next. One row per (task, agent, result); the next steps start only after it exists.
+ */
+export const routeDecisions = pgTable(
+  'route_decisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id),
+    fromAgent: text('from_agent').notNull(),
+    fromSig: text('from_sig').notNull(),
+    /** Steps that receive the result (empty = straight to the owner's gate). */
+    targets: jsonb('targets').notNull().default([]),
+    /** single (one system link) | end (no next step) | router (LLM) | fallback | manual | limit */
+    mode: text('mode').notNull(),
+    reasons: jsonb('reasons').notNull().default({}),
+    confidence: numeric('confidence', { precision: 4, scale: 3 }),
+    needHelp: boolean('need_help').notNull().default(false),
+    decidedBy: text('decided_by').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('route_decisions_uq').on(t.taskId, t.fromAgent, t.fromSig)],
+);

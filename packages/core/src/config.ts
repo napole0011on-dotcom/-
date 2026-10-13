@@ -101,6 +101,8 @@ const envSchema = z
     LLM_PROVIDER_WAIT_MAX_MINUTES: positiveInt.max(10_080).default(60),
     // Optional second model (must be in the price list), tried after the main one keeps failing.
     LLM_FALLBACK_MODEL: z.string().min(1).optional(),
+    // Dispatcher: at most this many hand-offs between agents per task (since the owner's last decision).
+    ROUTING_MAX_HOPS: positiveInt.max(100).default(12),
     LLM_STORE_FULL_TEXT: bool.default(true),
     LLM_REFUSAL_FALLBACK: bool.default(true),
     // Default depends on LLM_PROVIDER: config/model-pricing.json or config/model-pricing.tokenharbor.json.
@@ -273,6 +275,8 @@ export interface AppConfig {
   media: MediaConfig;
   kp: { catalogFile: string; vatPercent: number };
   mail: MailConfig;
+  /** Dispatcher between agents (who gets a step's result next). */
+  routing: { maxHops: number };
 }
 
 export interface PanelConfig {
@@ -414,6 +418,7 @@ export function loadConfig(
             : 'config/model-pricing.json'),
       ),
     },
+    routing: { maxHops: e.ROUTING_MAX_HOPS },
     budget: {
       dailyUsd: e.BUDGET_DAILY_USD,
       monthlyUsd: e.BUDGET_MONTHLY_USD,
