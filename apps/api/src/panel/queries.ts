@@ -843,3 +843,28 @@ export async function taskPath(d: QueryDeps, taskId: string) {
     })),
   };
 }
+
+/** «Ход задачи» and the replay: the task's events in board terms (view run_events). */
+export async function taskRunEvents(d: QueryDeps, taskId: string) {
+  const { rows } = await d.db.execute<{
+    id: number;
+    ts: Date;
+    agent: string;
+    type: string;
+    text: string;
+    cost: string | null;
+    payload: Record<string, unknown> | null;
+  }>(sql`
+    select id, ts, agent, type, text, cost, payload from run_events
+    where task_id = ${taskId} and brand_id = ${d.brandId()}
+    order by id limit 1000`);
+  return rows.map((r) => ({
+    id: Number(r.id),
+    at: new Date(r.ts).toISOString(),
+    agent: r.agent,
+    type: r.type,
+    text: r.text,
+    costUsd: r.cost == null ? null : Number(r.cost),
+    payload: r.payload,
+  }));
+}

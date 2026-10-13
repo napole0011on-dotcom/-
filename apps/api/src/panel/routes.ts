@@ -35,6 +35,7 @@ import {
   spendOverview,
   taskBoard,
   taskDetail,
+  taskRunEvents,
   type QueryDeps,
 } from './queries.js';
 import { SESSION_COOKIE, login, logout, touchSession, type Session } from './sessions.js';
@@ -186,6 +187,11 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     const detail = await taskDetail(d, req.params.id);
     if (!detail) return reply.code(404).send({ error: 'Задача не найдена' });
     return { ...detail, routes: await d.workflow.routes(req.params.id) };
+  });
+  app.get<{ Params: { id: string } }>('/api/tasks/:id/run-events', async (req, reply) => {
+    if (!uuid.safeParse(req.params.id).success)
+      return reply.code(400).send({ error: 'Неверный id' });
+    return taskRunEvents(d, req.params.id);
   });
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
     if (!uuid.safeParse(req.params.id).success)

@@ -1,11 +1,16 @@
 import type { Pipeline } from '@cms/agents/graph';
 import type { WorkspaceData } from '../api';
+import { handoffEdges } from './replay';
 
 export interface DemoFrame {
   states: Record<string, 'work' | 'done'>;
   doing: Record<string, string>;
   event: string;
   eventAgent: string;
+  /** Edges ("from>to") carrying a result in this frame. */
+  flows?: string[];
+  /** Dispatcher decision labels on edges ("from>to" -> text). */
+  labels?: Record<string, string>;
 }
 
 const TOPIC = 'Анонс осеннего меню';
@@ -18,17 +23,21 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
   const name = (id: string) => ws.nodes.find((n) => n.id === id)?.name ?? id;
   const frames: DemoFrame[] = [];
   const done: Record<string, 'done'> = {};
+  const labels: Record<string, string> = {};
   const push = (
     work: string[],
     event: string,
     eventAgent: string,
     doing: Record<string, string> = {},
+    flows: string[] = [],
   ) =>
     frames.push({
       states: { ...done, ...Object.fromEntries(work.map((w) => [w, 'work' as const])) },
       doing,
       event,
       eventAgent,
+      flows,
+      labels: { ...labels },
     });
 
   push(['ceo'], 'CEO · разбирает бриф и строит план', 'ceo', { ceo: `${TOPIC}: план` });
@@ -41,6 +50,15 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
       .filter((s) => left.has(s.agent) && s.after.every((a) => !left.has(a)))
       .map((s) => s.agent);
     if (layer.length === 0) break;
+    // Results flow in along the links the step waits for (the first layer gets the plan).
+    const flows = layer.flatMap((a) => {
+      const after = pipe.steps.find((s) => s.agent === a)!.after;
+      return (after.length ? after : ['ceo']).flatMap((f) => {
+        const path = handoffEdges(pipe.links, f, a);
+        if (path.length) labels[path.at(-1)!] = 'пример: по связи';
+        return path;
+      });
+    });
     push(
       layer,
       `${layer.map(name).join(', ')} · ${layer.length > 1 ? 'начали' : 'начал'} работу`,
@@ -48,6 +66,7 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
       Object.fromEntries(
         layer.map((a) => [a, a === 'copywriter' ? `${TOPIC}: 3 варианта текста` : `${TOPIC}`]),
       ),
+      flows,
     );
     const reviewed = pipe.steps
       .filter((s) => layer.includes(s.agent) && s.reviewed)

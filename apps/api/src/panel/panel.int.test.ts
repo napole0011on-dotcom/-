@@ -343,6 +343,16 @@ describe('web panel API (Postgres)', () => {
       expect(detail.routes).toEqual([
         expect.objectContaining({ agent: 'copywriter', targets: [], mode: 'end' }),
       ]);
+      // «Ход задачи»: the task's events in board terms, in order, with the hand-off decision.
+      const run = (await get(s, `/api/tasks/${taskId}/run-events`)).json<
+        { type: string; agent: string; payload: { to?: string[] } | null }[]
+      >();
+      const types = new Set(run.map((e) => e.type));
+      for (const k of ['start', 'done', 'handoff']) expect(types.has(k), k).toBe(true);
+      expect(run.find((e) => e.type === 'handoff')).toMatchObject({
+        agent: 'copywriter',
+        payload: { to: ['me'] },
+      });
       // «Передать другому»: validated body; only along the plan's links; not after export.
       expect((await post(s, `/api/tasks/${taskId}/forward`, { from: 1 })).statusCode).toBe(400);
       expect(

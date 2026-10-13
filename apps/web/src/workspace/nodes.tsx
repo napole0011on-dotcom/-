@@ -46,6 +46,8 @@ export type BoardNode = Node<BoardNodeData>;
 export interface BoardEdgeData extends Record<string, unknown> {
   color: string;
   flowing: boolean;
+  /** Dispatcher decision on this edge in the selected task / replay (short text). */
+  decision?: string | null;
   active: boolean;
   dim: boolean;
   deletable: boolean;
@@ -222,6 +224,20 @@ export const FlowEdge = memo(function FlowEdge(props: EdgeProps<BoardEdge>) {
           strokeWidth={2.2}
           style={{ stroke: d.color }}
         />
+      )}
+      {d.decision && !selected && d.active && !d.dim && (
+        <EdgeLabelRenderer>
+          <div
+            className="ws-edge-label ws-edge-decision nodrag nopan"
+            style={{
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              borderColor: d.color,
+            }}
+            title={d.decision}
+          >
+            {d.decision}
+          </div>
+        </EdgeLabelRenderer>
       )}
       {(selected || !d.active) && (
         <EdgeLabelRenderer>

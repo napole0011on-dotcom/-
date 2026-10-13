@@ -1618,3 +1618,38 @@ label {
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
+
+/* Dispatcher decision on an edge (selected task / replay / example) */
+.ws-edge-decision {
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+}
+
+/* «Повтор» controls and «Ход задачи» */
+.replay {
+  gap: var(--s-2);
+}
+.replay input[type='range'] {
+  width: 160px;
+}
+.replay-speed {
+  width: auto;
+}
+.run-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.run-feed .future {
+  opacity: 0.35;
+}
+.run-feed .current {
+  background: color-mix(in srgb, var(--agent) 12%, transparent);
+}
+.run-feed .run-error span {
+  color: var(--danger);
+}

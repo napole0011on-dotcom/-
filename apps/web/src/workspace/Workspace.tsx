@@ -33,6 +33,7 @@ import {
   useApprovals,
   useEvents,
   useStatus,
+  useRunEvents,
   useTaskPath,
   useTasks,
   useWorkspace,
@@ -50,6 +51,7 @@ import {
   type BoardNode,
 } from './nodes';
 import { demoScript, type DemoFrame } from './demo';
+import { replayFrames } from './replay';
 
 /** Below this the output points get too small to catch: the board scrolls instead. */
 const MIN_READABLE_ZOOM = 0.55;
@@ -97,6 +99,9 @@ function WorkspaceInner() {
   const [sel, setSel] = useState<Selection>({ type: 'node', id: 'ceo' });
   const [taskId, setTaskId] = useState<string | null>(null);
   const { data: path } = useTaskPath(taskId);
+  const { data: runEvents } = useRunEvents(taskId);
+  // «Повтор»: the selected task's events played back on the board (index into the frames).
+  const [replay, setReplay] = useState<{ i: number; playing: boolean; speed: 1 | 4 } | null>(null);
   const [demo, setDemo] = useState<DemoFrame | null>(null);
   const [demoFeed, setDemoFeed] = useState<LiveEvent[]>([]);
   const demoTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -173,20 +178,38 @@ function WorkspaceInner() {
     return { used, links: new Set(path.pipeline.links.map((l) => `${l.from}>${l.to}`)) };
   }, [path]);
 
+  const frames = useMemo(() => replayFrames(runEvents ?? [], data?.links ?? []), [runEvents, data]);
+  /** What the board shows instead of the live state: a replay frame or the demo. */
+  const shown: DemoFrame | null = (replay && frames[replay.i]) || demo;
+  // Decision labels: of the frame shown, else of the selected task as it is now.
+  const labels = shown ? shown.labels : taskId ? frames.at(-1)?.labels : undefined;
+
+  useEffect(() => {
+    if (!replay?.playing) return;
+    const t = setTimeout(
+      () =>
+        setReplay((r) =>
+          !r ? r : r.i + 1 >= frames.length ? { ...r, playing: false } : { ...r, i: r.i + 1 },
+        ),
+      1600 / replay.speed,
+    );
+    return () => clearTimeout(t);
+  }, [replay, frames.length]);
+
   const working = useCallback(
     (id: string) => {
       const n = data?.nodes.find((x) => x.id === id);
       if (!n) return false;
       return (
         nodeState(n, {
-          demo: demo?.states[id] ?? null,
+          demo: shown?.states[id] ?? null,
           live: liveAgents.has(id),
-          path: pathNodes.get(id) ?? null,
+          path: replay ? null : (pathNodes.get(id) ?? null),
           taskSelected: !!taskId && !demo,
         }) === 'working'
       );
     },
-    [data, demo, liveAgents, pathNodes, taskId],
+    [data, shown, demo, replay, liveAgents, pathNodes, taskId],
   );
 
   const why = useCallback(
@@ -200,14 +223,14 @@ function WorkspaceInner() {
     if (!data) return;
     const built: BoardNode[] = data.nodes.map((n) => {
       const st = nodeState(n, {
-        demo: demo?.states[n.id] ?? null,
+        demo: shown?.states[n.id] ?? null,
         live: liveAgents.has(n.id),
-        path: pathNodes.get(n.id) ?? null,
+        path: replay ? null : (pathNodes.get(n.id) ?? null),
         taskSelected: !!taskId && !demo,
       });
       const p = pathNodes.get(n.id);
-      const doing = demo?.doing[n.id]
-        ? demo.doing[n.id]!
+      const doing = shown?.doing[n.id]
+        ? shown.doing[n.id]!
         : taskId && path
           ? p
             ? `${path.title.slice(0, 60)}`
@@ -256,6 +279,8 @@ function WorkspaceInner() {
   }, [
     data,
     demo,
+    shown,
+    replay,
     liveAgents,
     pathNodes,
     pathLinks,
@@ -291,7 +316,8 @@ function WorkspaceInner() {
     return data.links.map((l) => {
       const from = data.nodes.find((n) => n.id === l.from);
       const color = from && from.kind !== 'human' ? agentVar(from.color) : 'var(--primary)';
-      const onPath = pathLinks ? pathLinks.links.has(`${l.from}>${l.to}`) : true;
+      const key = `${l.from}>${l.to}`;
+      const onPath = pathLinks ? pathLinks.links.has(key) : true;
       return {
         id: l.id,
         source: l.from,
@@ -308,7 +334,8 @@ function WorkspaceInner() {
         ariaLabel: `Связь ${from?.name ?? l.from} → ${data.nodes.find((n) => n.id === l.to)?.name ?? l.to}`,
         data: {
           color,
-          flowing: working(l.from),
+          flowing: !!shown?.flows?.includes(key) || working(l.from),
+          decision: labels?.[key] ?? null,
           active: l.active,
           dim: !!pathLinks && !demo && !onPath,
           deletable: l.deletable,
@@ -317,7 +344,7 @@ function WorkspaceInner() {
         },
       };
     });
-  }, [data, sel, pathLinks, demo, working]);
+  }, [data, sel, pathLinks, demo, shown, labels, working]);
 
   const onNodesChangeSel = useCallback(
     (changes: NodeChange<BoardNode>[]) => {
@@ -370,6 +397,7 @@ function WorkspaceInner() {
   const startDemo = useCallback(() => {
     if (!data) return;
     setTaskId(null);
+    setReplay(null);
     const frames = demoScript(buildPipeline(graphNodes(data), data.links), data);
     let i = 0;
     setDemoFeed([]);
@@ -430,6 +458,7 @@ function WorkspaceInner() {
   if (isLoading) return <Loading rows={2} />;
   if (!data) return <ErrorBox error={error} />;
 
+  const taskRun = taskId && !demo ? (runEvents ?? []) : null;
   const feed = demo || demoFeed.length ? demoFeed : (events ?? []);
   const nodeColor = (agent: string) => {
     const n = data.nodes.find((x) => x.id === agent);
@@ -451,6 +480,7 @@ function WorkspaceInner() {
           value={taskId ?? ''}
           onChange={(e) => {
             stopDemo();
+            setReplay(null);
             setTaskId(e.target.value || null);
           }}
         >
@@ -465,6 +495,64 @@ function WorkspaceInner() {
           <Button onClick={demo ? stopDemo : startDemo}>
             <Icon name={demo ? 'stop' : 'play'} /> {demo ? 'Остановить показ' : 'Показать пример'}
           </Button>
+        )}
+        {taskId && frames.length > 0 && (
+          <div className="row replay" role="group" aria-label="Повтор хода задачи">
+            <Button
+              className="btn-sm"
+              onClick={() =>
+                setReplay((r) =>
+                  r?.playing
+                    ? { ...r, playing: false }
+                    : {
+                        i: r && r.i + 1 < frames.length ? r.i : 0,
+                        playing: true,
+                        speed: r?.speed ?? 1,
+                      },
+                )
+              }
+            >
+              <Icon name={replay?.playing ? 'stop' : 'play'} />{' '}
+              {replay?.playing ? 'Пауза' : 'Повтор'}
+            </Button>
+            <select
+              aria-label="Скорость повтора"
+              className="replay-speed"
+              value={replay?.speed ?? 1}
+              onChange={(e) =>
+                setReplay((r) => ({
+                  i: r?.i ?? 0,
+                  playing: r?.playing ?? false,
+                  speed: Number(e.target.value) === 4 ? 4 : 1,
+                }))
+              }
+            >
+              <option value={1}>1×</option>
+              <option value={4}>4×</option>
+            </select>
+            <input
+              type="range"
+              aria-label="Момент хода задачи"
+              min={0}
+              max={frames.length - 1}
+              value={replay?.i ?? frames.length - 1}
+              onChange={(e) =>
+                setReplay((r) => ({
+                  i: Number(e.target.value),
+                  playing: false,
+                  speed: r?.speed ?? 1,
+                }))
+              }
+            />
+            <span className="small muted tabular">
+              {(replay?.i ?? frames.length - 1) + 1}/{frames.length}
+            </span>
+            {replay && (
+              <Button className="btn-sm" variant="ghost" onClick={() => setReplay(null)}>
+                Сейчас
+              </Button>
+            )}
+          </div>
         )}
         <span className="muted small" title="Как обновляется доска">
           {mode === 'live'
@@ -567,10 +655,30 @@ function WorkspaceInner() {
           </div>
           <section className="card feed" aria-live="polite">
             <div className="row between" style={{ marginBottom: 'var(--s-2)' }}>
-              <h2>Что происходит сейчас</h2>
-              <span className="muted small">{feed.length} событий</span>
+              <h2>{taskRun ? 'Ход задачи' : 'Что происходит сейчас'}</h2>
+              <span className="muted small">{(taskRun ?? feed).length} событий</span>
             </div>
-            {feed.length === 0 ? (
+            {taskRun ? (
+              <ol className="feed-list run-feed">
+                {[...taskRun].reverse().map((e, k) => {
+                  const idx = taskRun.length - 1 - k;
+                  return (
+                    <li
+                      key={e.id}
+                      className={`feed-row run-${e.type}${replay && idx > replay.i ? ' future' : ''}${replay?.i === idx ? ' current' : ''}`}
+                      style={{ '--agent': nodeColor(e.agent) } as CSSProperties}
+                    >
+                      <time>{timeOf(e.at)}</time>
+                      <i aria-hidden />
+                      <span>{e.text}</span>
+                      <span className="cost">
+                        {e.costUsd != null && e.costUsd > 0 ? usd(e.costUsd) : ''}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : feed.length === 0 ? (
               <Empty icon="activity">
                 Событий пока нет. Отправьте бриф или нажмите «Показать пример».
               </Empty>

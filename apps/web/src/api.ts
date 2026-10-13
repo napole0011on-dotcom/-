@@ -520,6 +520,19 @@ export interface LiveEvent {
   kind: string;
   text: string;
   costUsd: number | null;
+  payload?: Record<string, unknown> | null;
+}
+
+/** An event of one task in board terms (view run_events): «Ход задачи» and the replay. */
+export interface RunEvent {
+  id: number;
+  at: string;
+  agent: string;
+  /** start | handoff | done | error | wait, or another agent_events kind (plan_ready, verdict…). */
+  type: string;
+  text: string;
+  costUsd: number | null;
+  payload: Record<string, unknown> | null;
 }
 
 export interface PipelineData {

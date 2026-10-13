@@ -48,6 +48,8 @@ apps/web            панель: React + Vite + TanStack Query, свой роу
   src/theme/tokens.css дизайн-токены (единственное место с цветами), светлая/тёмная тема; theme.ts — переключатель
   src/workspace/       «Рабочий стол»: React Flow (@xyflow/react), узлы/связи, боковая панель, лента, демо-прогон
   src/live.ts          SSE /api/events/stream → лента и обновление доски; при обрыве — опрос раз в 3 с
+  src/workspace/replay.ts  события задачи (/api/tasks/:id/run-events) → кадры доски: кто работает, куда
+                       течёт результат, подписи решений; «Повтор» 1×/4× и «Показать пример» — те же кадры
 apps/bot            Telegram-бот + воркер очереди + обслуживание в одном процессе (pnpm dev:bot)
   src/bot.ts           белый список, команды, кнопки, ввод комментариев (ForceReply)
   src/telegram-channel.ts, format.ts  сообщения гейтов (HTML, ≤ 4096 символов)

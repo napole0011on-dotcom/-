@@ -34,6 +34,7 @@ export function useLiveEvents(onEvent?: (e: LiveEvent) => void): LiveMode {
       refresh = setTimeout(() => {
         void qc.invalidateQueries({ queryKey: ['workspace'] });
         void qc.invalidateQueries({ queryKey: ['task-path'] });
+        void qc.invalidateQueries({ queryKey: ['run-events'] });
         void qc.invalidateQueries({ queryKey: ['approvals'] });
       }, 300);
     });

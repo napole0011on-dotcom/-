@@ -4,6 +4,7 @@ import {
   type AgentCard,
   type AgentSettings,
   type LiveEvent,
+  type RunEvent,
   type TaskPathData,
   type WorkspaceData,
   type Approvals,
@@ -88,6 +89,14 @@ export const useTaskPath = (id: string | null) =>
   useQuery({
     queryKey: ['task-path', id],
     queryFn: () => api.get<TaskPathData>(`/api/tasks/${id}/path`),
+    enabled: !!id,
+    refetchInterval: FAST,
+  });
+
+export const useRunEvents = (id: string | null) =>
+  useQuery({
+    queryKey: ['run-events', id],
+    queryFn: () => api.get<RunEvent[]>(`/api/tasks/${id}/run-events`),
     enabled: !!id,
     refetchInterval: FAST,
   });
