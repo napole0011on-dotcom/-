@@ -78,6 +78,13 @@
       "when": 1791851747578,
       "tag": "0010_agent_compositions",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791852691738,
+      "tag": "0011_agent_templates",
+      "breakpoints": true
     }
   ]
 }

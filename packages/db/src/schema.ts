@@ -729,3 +729,21 @@ export const agentCompositions = pgTable(
   },
   (t) => [uniqueIndex('agent_compositions_uq').on(t.brandId, t.agentId, t.version)],
 );
+
+/** The owner's agent templates (library). Every save of a slug is a new version. */
+export const agentTemplates = pgTable(
+  'agent_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    slug: text('slug').notNull(),
+    version: integer('version').notNull(),
+    /** TemplateBody: name, role, prompt, fields, criteria — never keys or tokens. */
+    body: jsonb('body').notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('agent_templates_uq').on(t.brandId, t.slug, t.version)],
+);
