@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, type RouteView, type TaskDetail } from '../api';
 import { DECISION_LABEL, STATUS_LABEL, STATUS_TONE, actorLabel, dateTime, usd } from '../format';
-import { useTask } from '../queries';
+import { useStatus, useTask } from '../queries';
 import { Button, ConfirmButton, ErrorBox, Link, Loading, Pill, useAction } from '../ui';
 import {
   CopyItemView,
@@ -39,6 +39,14 @@ export function TaskPage({ id }: { id: string }) {
   const cancel = useAction(() => api.post(`/api/tasks/${id}/cancel`));
   const budget = useAction((extraUsd: 1 | 5) => api.post(`/api/tasks/${id}/budget`, { extraUsd }));
   const resume = useAction(() => api.post(`/api/tasks/${id}/resume`));
+  const planStart = useAction(() => api.post(`/api/tasks/${id}/plan-start`));
+  const { data: status } = useStatus();
+  // Re-render every few seconds so «в очереди дольше 30 с» appears without a click.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
   if (isLoading) return <Loading />;
   if (!data) return <ErrorBox error={error} />;
   const { task, actions } = data;
@@ -63,6 +71,36 @@ export function TaskPage({ id }: { id: string }) {
         <span>· создана {dateTime(task.createdAt)}</span>
         <span>· статус с {dateTime(task.statusChangedAt)}</span>
       </div>
+
+      {task.status === 'draft' &&
+        !data.runs.some((r) => r.status === 'queued' || r.status === 'running') && (
+          <div className="card warn-card stack">
+            <span>
+              ⏳ Задача в «приёме»: планирование не запущено.
+              {status?.planning ? ` ${status.planning}` : ''}
+            </span>
+            <div className="row wrap">
+              <Button
+                variant="primary"
+                disabled={!!status?.planning}
+                busy={planStart.isPending}
+                onClick={() => planStart.mutate()}
+              >
+                Запустить планирование
+              </Button>
+              {status?.planning && <Link to="/">На рабочий стол</Link>}
+            </div>
+          </div>
+        )}
+
+      {status &&
+        !status.worker.alive &&
+        data.runs.some((r) => r.status === 'queued' && now - Date.parse(r.createdAt) > 30_000) && (
+          <div className="card warn-card" role="alert">
+            ⏳ Запуск стоит в очереди дольше 30 секунд: воркер не запущен, поэтому задачу никто не
+            берёт. Запустите <code>pnpm dev:bot</code> — очередь разберётся сама.
+          </div>
+        )}
 
       {task.waitingFor && (
         <div className="card warn-card">

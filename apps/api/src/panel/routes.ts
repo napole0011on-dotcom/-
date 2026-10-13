@@ -601,7 +601,10 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   });
   app.get('/api/library', async () => ({
     categories: CATEGORIES,
-    templates: await listTemplates(d.db, brand()),
+    templates: (await listTemplates(d.db, brand())).map((t) => ({
+      ...t,
+      realNeeds: CAPABILITIES.find((c) => c.id === t.capability)?.realNeeds ?? null,
+    })),
   }));
   app.post('/api/library/add', async (req, reply) => {
     const body = z

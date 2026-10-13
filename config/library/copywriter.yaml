@@ -4,7 +4,7 @@ version: 1
 category: Команда
 name: Копирайтер
 role: пишет тексты для Instagram и Telegram
-description: "По 3 варианта на каждую единицу контента: хук, текст, CTA; для Reels — сценарий по секундам."
+description: 'По 3 варианта на каждую единицу контента: хук, текст, CTA; для Reels — сценарий по секундам.'
 team_role: worker
 capability: copywriting
 model_role: worker

@@ -27,6 +27,7 @@
     "dev:web": "pnpm --filter @cms/web dev",
     "panel:password": "pnpm --filter @cms/api panel:password",
     "demo:core": "pnpm --filter @cms/engine demo",
+    "library:sync": "pnpm --filter @cms/bot library:sync",
     "dev:bot": "pnpm --filter @cms/bot dev",
     "start:bot": "pnpm --filter @cms/bot start",
     "smoke:llm": "pnpm --filter @cms/bot smoke",

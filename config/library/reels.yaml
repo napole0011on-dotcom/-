@@ -13,75 +13,75 @@ fields:
     label: Идеи
     type: items
     required: true
-    hint: ""
+    hint: ''
     minItems: 1
     fields:
       - key: hook
         label: Хук
         type: text
-        hint: ""
+        hint: ''
       - key: idea
         label: Идея
         type: text
-        hint: ""
+        hint: ''
       - key: duration_sec
         label: Длительность, с
         type: number
-        hint: ""
+        hint: ''
       - key: caption
         label: Подпись
         type: long_text
-        hint: ""
+        hint: ''
       - key: cta
         label: CTA
         type: text
-        hint: ""
+        hint: ''
       - key: cover_texts
         label: Обложка
         type: text
-        hint: ""
+        hint: ''
   - key: scenes
     label: Сцены
     type: items
     required: true
-    hint: ""
+    hint: ''
     minItems: 3
     fields:
       - key: idea
         label: Идея №
         type: number
-        hint: ""
+        hint: ''
       - key: n
         label: Сцена №
         type: number
-        hint: ""
+        hint: ''
       - key: seconds
         label: Секунды
         type: text
-        hint: ""
+        hint: ''
       - key: visual
         label: В кадре
         type: text
-        hint: ""
+        hint: ''
       - key: voiceover
         label: Голос
         type: text
-        hint: ""
+        hint: ''
       - key: onscreen_text
         label: Текст на экране
         type: text
-        hint: ""
+        hint: ''
   - key: hashtags
     label: Хэштеги
     type: list
     required: true
-    hint: ""
+    hint: ''
     minItems: 3
   - key: risk_notes
     label: Риски съёмки
     type: list
     required: false
-    hint: ""
+    hint: ''
 criteria:
   - хук срабатывает в первые 3 секунды
   - длительность не больше заданной в брифе (по умолчанию 60 секунд), сцены в сумме дают длительность

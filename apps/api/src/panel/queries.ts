@@ -22,7 +22,6 @@ import {
   agentsForRun,
   constructorSpecOf,
   listAgents,
-  specHash,
   briefText,
   estimatePlan,
   getControlState,
@@ -778,6 +777,7 @@ export async function workspaceView(d: QueryDeps) {
       card: cards.find((c) => c.id === n.id) ?? null,
       teamRole: n.teamRole,
       capability: n.capability,
+      capabilityName: capabilityById(n.capability)?.name ?? null,
       tool: (n.capability && tools[n.capability]) || null,
     })),
     links: ws.links.map((l) => ({

@@ -17,7 +17,7 @@ const TOPIC = 'Анонс осеннего меню';
 
 /**
  * "Показать пример" (mock only): a scripted run over the CURRENT board, no models called,
- * nothing written. Layers follow the pipeline order; reviewed steps pass through the Critic.
+ * nothing written. Layers follow the pipeline order; reviewed steps pass through their reviewer.
  */
 export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
   const name = (id: string) => ws.nodes.find((n) => n.id === id)?.name ?? id;
@@ -40,9 +40,14 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
       labels: { ...labels },
     });
 
-  push(['ceo'], 'CEO · разбирает бриф и строит план', 'ceo', { ceo: `${TOPIC}: план` });
-  done.ceo = 'done';
-  push([], 'CEO · план готов, вы утвердили', 'ceo');
+  const planner = pipe.planner ?? pipe.links.find((l) => l.from === 'brief')?.to;
+  if (planner) {
+    push([planner], `${name(planner)} · разбирает бриф и строит план`, planner, {
+      [planner]: `${TOPIC}: план`,
+    });
+    done[planner] = 'done';
+    push([], `${name(planner)} · план готов, вы утвердили`, planner);
+  }
 
   const left = new Set(pipe.steps.map((s) => s.agent));
   while (left.size) {
@@ -53,7 +58,7 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
     // Results flow in along the links the step waits for (the first layer gets the plan).
     const flows = layer.flatMap((a) => {
       const after = pipe.steps.find((s) => s.agent === a)!.after;
-      return (after.length ? after : ['ceo']).flatMap((f) => {
+      return (after.length ? after : planner ? [planner] : []).flatMap((f) => {
         const path = handoffEdges(pipe.links, f, a);
         if (path.length) labels[path.at(-1)!] = 'пример: по связи';
         return path;
@@ -63,25 +68,24 @@ export function demoScript(pipe: Pipeline, ws: WorkspaceData): DemoFrame[] {
       layer,
       `${layer.map(name).join(', ')} · ${layer.length > 1 ? 'начали' : 'начал'} работу`,
       layer[0]!,
-      Object.fromEntries(
-        layer.map((a) => [a, a === 'copywriter' ? `${TOPIC}: 3 варианта текста` : `${TOPIC}`]),
-      ),
+      Object.fromEntries(layer.map((a) => [a, TOPIC])),
       flows,
     );
-    const reviewed = pipe.steps
-      .filter((s) => layer.includes(s.agent) && s.reviewed)
-      .map((s) => s.agent);
-    if (reviewed.length) {
+    // Each reviewer checks the steps linked to it (plans before stage 7: no reviewer id).
+    const byReviewer = new Map<string, string[]>();
+    for (const st of pipe.steps.filter((x) => layer.includes(x.agent) && x.reviewed)) {
+      const r = st.reviewer ?? pipe.links.find((l) => l.from === st.agent)?.to;
+      if (r) byReviewer.set(r, [...(byReviewer.get(r) ?? []), st.agent]);
+    }
+    for (const [reviewer, reviewed] of byReviewer) {
       push(
-        ['critic', ...reviewed],
-        `Critic · проверяет: ${reviewed.map(name).join(', ')}`,
-        'critic',
-        {
-          critic: `${TOPIC}: проверка по чек-листу`,
-        },
+        [reviewer, ...reviewed],
+        `${name(reviewer)} · проверяет: ${reviewed.map(name).join(', ')}`,
+        reviewer,
+        { [reviewer]: `${TOPIC}: проверка по критериям` },
       );
-      done.critic = 'done';
-      push([], 'Critic · вердикт: принято', 'critic');
+      done[reviewer] = 'done';
+      push([], `${name(reviewer)} · вердикт: принято`, reviewer);
     }
     for (const a of layer) {
       done[a] = 'done';

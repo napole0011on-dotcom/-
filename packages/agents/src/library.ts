@@ -84,6 +84,16 @@ export const TemplateBody = z
   });
 export type TemplateBody = z.infer<typeof TemplateBody>;
 
+/** Only the template's own fields (no id, version, source of this installation). */
+function bodyOf(t: object): Record<string, unknown> {
+  const all = t as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(TemplateBody.shape)
+      .filter((k) => k in all)
+      .map((k) => [k, all[k]]),
+  );
+}
+
 export interface TemplateView extends TemplateBody {
   /** The slug (templates are addressed by it; every save is a new version). */
   id: string;
@@ -183,7 +193,7 @@ export async function syncLibrary(
   const files = loadLibraryFiles(dir);
   const res = { added: [] as string[], updated: [] as string[], skipped: [] as string[] };
   for (const f of files) {
-    const { version: _fileVersion, ...body } = f;
+    const body = bodyOf(f);
     await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`tpl:${brandId}:${f.slug}`}))`);
       const rows = await tx
@@ -316,7 +326,7 @@ export async function updateTemplate(
 ) {
   const t = await getTemplate(db, brandId, id);
   if (!t) return { ok: false, message: 'Шаблон не найден' };
-  const { id: _id, version: _v, source: _s, system: _sys, createdAt: _c, ...body } = t;
+  const body = bodyOf(t);
   const next = TemplateBody.safeParse({ ...body, ...patch });
   if (!next.success) {
     const i = next.error.issues[0];
@@ -380,12 +390,11 @@ export async function saveAgentAsTemplate(
 
 /** Export: the template only — no keys, no ids of this installation. */
 export function exportTemplate(t: TemplateView) {
-  const { id: _id, version, source: _s, system: _sys, createdAt: _c, requiresKey: _r, ...body } = t;
   return {
     format: 'cms-agent-template',
     formatVersion: 2,
-    version,
-    template: TemplateBody.parse(body),
+    version: t.version,
+    template: TemplateBody.parse(bodyOf(t)),
   };
 }
 

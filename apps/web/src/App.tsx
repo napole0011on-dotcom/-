@@ -190,6 +190,21 @@ function StoppedBanner() {
   );
 }
 
+/** The queue worker lives in the bot process: without it nothing runs, so say it on every page. */
+function WorkerBanner() {
+  const { data } = useStatus();
+  if (!data || data.worker.alive) return null;
+  return (
+    <div className="banner" role="alert">
+      <Icon name="alert" />
+      <span>
+        Воркер не запущен: задачи не будут выполняться. Запустите <code>pnpm dev:bot</code>
+        {data.worker.beatAt ? ` (последний сигнал ${dateTime(data.worker.beatAt)})` : ''}.
+      </span>
+    </div>
+  );
+}
+
 const THEME_LABEL = { system: 'Тема: как в системе', light: 'Тема: светлая', dark: 'Тема: тёмная' };
 
 function ThemeButton() {
@@ -407,6 +422,7 @@ export function App() {
     <>
       <Header path={path} onLogout={logout} />
       <main className="main">
+        <WorkerBanner />
         <StoppedBanner />
         <Page path={path} />
       </main>

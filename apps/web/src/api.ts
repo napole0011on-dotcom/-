@@ -28,6 +28,10 @@ export interface SessionInfo {
 
 export interface LlmStatus {
   provider: 'mock' | 'anthropic' | 'tokenharbor';
+  /** The queue worker (pnpm dev:bot): without it tasks are not run. */
+  worker: { alive: boolean; beatAt: string | null };
+  /** Why a new task would not start (no planner, several, a draft one); null: it would. */
+  planning: string | null;
   gatewayHost: string | null;
   structuredOutputs: boolean;
   rateLimit: { perMinute: number; perHour: number };
@@ -141,8 +145,12 @@ export interface ConstructorView {
   fields: FieldSpec[];
   criteria: string[];
   lastTest: AgentTestRecord | null;
-  /** Hash of the saved fields + criteria (null while they are incomplete). */
+  /** Hash of the saved fields, criteria, role and capability (a test is valid for it). */
   specHash: string | null;
+  /** The output is described by the owner's fields (planner/reviewer/capabilities: by code). */
+  needsFields: boolean;
+  /** The agent calls an LLM (tool capabilities do not). */
+  usesLlm: boolean;
   /** What still blocks switching the agent on (empty when active or ready). */
   activationProblems: string[];
 }
@@ -157,8 +165,10 @@ export interface AgentSettings {
     status: NodeStatus;
     color: string;
     icon: string;
+    teamRole: TeamRole;
+    capability: { id: string; name: string; kind: 'llm' | 'tool'; realNeeds: string | null } | null;
   };
-  constructor: ConstructorView | null;
+  constructor: ConstructorView;
   controls: AgentControlsView;
   model: {
     name: string;
@@ -487,12 +497,20 @@ export interface LibraryTemplate {
   id: string;
   slug: string;
   version: number;
+  /** A starting template from config/library that the owner has not changed. */
   system: boolean;
+  source: string;
   category: string;
   name: string;
   role: string;
   description: string;
-  requiresKey: string | null;
+  teamRole: TeamRole;
+  capability: string | null;
+  prompt: string | null;
+  criteria: string[];
+  basicTeam: number | null;
+  /** What real (non-mock) work of its capability needs; null: works as is. */
+  realNeeds: string | null;
 }
 export interface LibraryData {
   categories: string[];
@@ -519,8 +537,10 @@ export interface BlocksData {
   problems: string[];
 }
 
-export type NodeKind = 'human' | 'code' | 'constructor' | 'tool';
-export type NodeStatus = 'active' | 'draft' | 'planned';
+/** human: «Бриф» and «Вы» (not agents); custom: every agent (the owner's). */
+export type NodeKind = 'human' | 'custom';
+export type NodeStatus = 'active' | 'draft';
+export type TeamRole = 'planner' | 'reviewer' | 'worker' | 'acceptor';
 
 export interface WorkspaceNodeData {
   id: string;
@@ -533,7 +553,11 @@ export interface WorkspaceNodeData {
   icon: string;
   position: { x: number; y: number };
   card: AgentCard | null;
-  /** Tool steps: permissions and read-only parameters from .env. */
+  teamRole: TeamRole | null;
+  /** Code behaviour of the agent (copywriting, stt_voice, ...); null: an LLM agent by fields. */
+  capability: string | null;
+  capabilityName: string | null;
+  /** Tool agents: permissions and read-only parameters from .env. */
   tool: {
     permissions: { reads: string[]; writes: string[]; hosts: string[] };
     params: Record<string, string>;
@@ -544,7 +568,6 @@ export interface WorkspaceLinkData {
   id: string;
   from: string;
   to: string;
-  kind: 'system' | 'user';
   active: boolean;
   deletable: boolean;
 }
@@ -579,7 +602,17 @@ export interface RunEvent {
 }
 
 export interface PipelineData {
-  steps: { agent: string; name: string; after: string[]; reviewed: boolean; inputs?: string[] }[];
+  /** The planner that made the plan (plans before stage 7: the target of «Бриф»). */
+  planner?: string;
+  steps: {
+    agent: string;
+    name: string;
+    after: string[];
+    reviewed: boolean;
+    reviewer?: string | null;
+    inputs?: string[];
+  }[];
+  warnings?: string[];
   inactive: { agent: string; name: string; reason: string }[];
   links: { from: string; to: string }[];
 }

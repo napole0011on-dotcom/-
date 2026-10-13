@@ -1,9 +1,18 @@
 import { useState, type CSSProperties } from 'react';
-import { api, type AgentSettings, type FieldSpec, type FieldType, type SubFieldSpec } from '../api';
+import {
+  api,
+  type AgentSettings,
+  type FieldSpec,
+  type FieldType,
+  type SubFieldSpec,
+  type TeamRole,
+} from '../api';
+import { DeleteAgentDialog } from '../components/DeleteAgentDialog';
+import { TeamRoleSelect } from '../workspace/Library';
 import { ModelTab, PromptTab, TestTab } from '../components/AgentDrawer';
 import { agentVar, dateTime } from '../format';
 import { Icon } from '../icons';
-import { useAgentSettings } from '../queries';
+import { useAgentSettings, useWorkspace } from '../queries';
 import { navigate } from '../router';
 import { Button, ConfirmButton, ErrorBox, Link, Loading, Pill, useAction } from '../ui';
 import { MODEL_ROLES, MODEL_ROLE_TEXT } from './NewAgent';
@@ -41,23 +50,14 @@ export function keyFromLabel(label: string): string {
 const STATUS_PILL = {
   active: { tone: 'success' as const, label: 'включён' },
   draft: { tone: 'accent' as const, label: 'черновик' },
-  planned: { tone: 'muted' as const, label: 'запланирован' },
 };
 
-/** Constructor: fields of the result, Critic criteria, prompt, model, test, switch on. */
+/** Constructor: fields of the result, review criteria, prompt, model, test, switch on. */
 export function AgentBuilder({ id }: { id: string }) {
   const { data, error, isLoading } = useAgentSettings(id);
   const [draft, setDraft] = useState<string | null>(null);
   if (isLoading) return <Loading />;
   if (!data) return <ErrorBox error={error ?? new Error('Агент не найден')} />;
-  if (data.agent.kind !== 'constructor' || !data.constructor) {
-    return (
-      <div className="empty">
-        {data.agent.name} описан в коде: его промпт и модель меняются в «Настроить» на рабочем
-        столе. <Link to="/">На рабочий стол</Link>
-      </div>
-    );
-  }
   const s = data;
   const c = data.constructor;
   const st = STATUS_PILL[s.agent.status];
@@ -88,32 +88,45 @@ export function AgentBuilder({ id }: { id: string }) {
       </section>
       <section className="card stack">
         <h2>Результат</h2>
-        <FieldsEditor key={JSON.stringify([c.fields, c.criteria])} s={s} />
+        {c.needsFields ? (
+          <FieldsEditor key={JSON.stringify([c.fields, c.criteria])} s={s} />
+        ) : (
+          <p className="muted small">
+            {s.agent.capability
+              ? `Результат задаёт инструмент «${s.agent.capability.name}»: поля не нужны.`
+              : 'Результат задаёт роль в команде (план или вердикт проверки): поля не нужны.'}
+            {s.agent.capability?.realNeeds &&
+              ` Сейчас работает на mock; для настоящей работы: ${s.agent.capability.realNeeds}.`}
+          </p>
+        )}
       </section>
-      <section className="card stack">
-        <h2>Промпт</h2>
-        <PromptTab s={s} draft={draft} setDraft={setDraft} />
-      </section>
+      {c.usesLlm && (
+        <section className="card stack">
+          <h2>Промпт</h2>
+          <PromptTab s={s} draft={draft} setDraft={setDraft} />
+        </section>
+      )}
       <section className="card stack">
         <h2>Тест</h2>
         <TestTab s={s} draft={draft} />
       </section>
-      <section className="card stack">
-        <h2>Модель</h2>
-        <ModelTab key={s.model.name} s={s} />
-      </section>
+      {c.usesLlm && (
+        <section className="card stack">
+          <h2>Модель</h2>
+          <ModelTab key={s.model.name} s={s} />
+        </section>
+      )}
     </div>
   );
 }
 
 function Readiness({ s }: { s: AgentSettings }) {
-  const c = s.constructor!;
+  const c = s.constructor;
   const activate = useAction(() => api.post(`/api/agents/${s.agent.id}/activate`));
   const deactivate = useAction(() => api.post(`/api/agents/${s.agent.id}/deactivate`));
-  const remove = useAction(
-    () => api.post(`/api/agents/${s.agent.id}/delete`),
-    (r) => r.ok && navigate('/'),
-  );
+  const [deleting, setDeleting] = useState(false);
+  const { data: ws } = useWorkspace();
+  const planners = ws?.nodes.filter((n) => n.kind !== 'human' && n.teamRole === 'planner').length;
   const active = s.agent.status === 'active';
   return (
     <section className="card stack">
@@ -160,23 +173,18 @@ function Readiness({ s }: { s: AgentSettings }) {
             <Icon name="play" /> Включить агента
           </Button>
         )}
-        {!active && (
-          <ConfirmButton
-            label={
-              <>
-                <Icon name="trash" /> Удалить
-              </>
-            }
-            variant="ghost"
-            title={`Удалить ${s.agent.name}?`}
-            text="Агент и все его связи на доске будут удалены. Версии промпта останутся в журнале."
-            confirmLabel="Да, удалить"
-            danger
-            busy={remove.isPending}
-            onConfirm={() => remove.mutate(undefined)}
-          />
-        )}
+        <Button variant="ghost" onClick={() => setDeleting(true)}>
+          <Icon name="trash" /> Удалить
+        </Button>
       </div>
+      {deleting && (
+        <DeleteAgentDialog
+          agent={s.agent}
+          lastPlanner={s.agent.teamRole === 'planner' && (planners ?? 0) <= 1}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => navigate('/')}
+        />
+      )}
     </section>
   );
 }
@@ -186,11 +194,19 @@ function Basics({ s }: { s: AgentSettings }) {
   const [role, setRole] = useState(s.agent.role);
   const [description, setDescription] = useState(s.agent.description);
   const [modelRole, setModelRole] = useState<string>(s.model.role);
+  const [teamRole, setTeamRole] = useState<TeamRole>(s.agent.teamRole);
   const save = useAction(() =>
-    api.post(`/api/agents/${s.agent.id}/definition`, { name, role, description, modelRole }),
+    api.post(`/api/agents/${s.agent.id}/definition`, {
+      name,
+      role,
+      description,
+      teamRole,
+      ...(s.constructor.usesLlm ? { modelRole } : {}),
+    }),
   );
   const dirty =
     name !== s.agent.name ||
+    teamRole !== s.agent.teamRole ||
     role !== s.agent.role ||
     description !== s.agent.description ||
     modelRole !== s.model.role;
@@ -208,14 +224,22 @@ function Basics({ s }: { s: AgentSettings }) {
         value={description}
         onChange={(e) => setDescription(e.target.value)}
       />
-      <label htmlFor="b-model">Модель по роли</label>
-      <select id="b-model" value={modelRole} onChange={(e) => setModelRole(e.target.value)}>
-        {MODEL_ROLES.map((r) => (
-          <option key={r} value={r}>
-            {MODEL_ROLE_TEXT[r]}
-          </option>
-        ))}
-      </select>
+      <TeamRoleSelect id="b-team-role" value={teamRole} onChange={setTeamRole} />
+      {teamRole !== s.agent.teamRole && s.agent.status === 'active' && (
+        <div className="warn small">Смена роли вернёт агента в черновик до нового теста.</div>
+      )}
+      {s.constructor.usesLlm && (
+        <>
+          <label htmlFor="b-model">Модель по роли</label>
+          <select id="b-model" value={modelRole} onChange={(e) => setModelRole(e.target.value)}>
+            {MODEL_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {MODEL_ROLE_TEXT[r]}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
       <div className="row">
         <Button
           variant="primary"
@@ -236,7 +260,7 @@ function Basics({ s }: { s: AgentSettings }) {
 const emptyField = (): FieldSpec => ({ key: '', label: '', type: 'text', required: true });
 
 function FieldsEditor({ s }: { s: AgentSettings }) {
-  const c = s.constructor!;
+  const c = s.constructor;
   const [fields, setFields] = useState<FieldSpec[]>(() =>
     c.fields.length ? c.fields : [emptyField()],
   );
@@ -369,10 +393,10 @@ function FieldsEditor({ s }: { s: AgentSettings }) {
         </Button>
       </div>
 
-      <h3>Что проверяет Critic</h3>
+      <h3>Что проверяет Проверяющий</h3>
       <p className="small muted">
-        Работает, если на доске есть связь «{s.agent.name} → Critic». Без критериев Critic проверяет
-        соответствие брифу и отсутствие выдуманных фактов.
+        Работает, если на доске есть связь «{s.agent.name} → Проверяющий». Без критериев проверяющий
+        смотрит на соответствие брифу и отсутствие выдуманных фактов.
       </p>
       {criteria.map((x, i) => (
         <div key={i} className="row">

@@ -3,12 +3,15 @@ import type { DemoFrame } from './demo';
 
 type Link = { from: string; to: string };
 
-/** Board edges a hand-off from `from` to `to` travels along (directly, or through the Critic). */
+/**
+ * Board edges a hand-off from `from` to `to` travels along: directly, or through the agent
+ * between them (a reviewer: «A → Проверяющий → B» means B gets A's checked result).
+ */
 export function handoffEdges(links: Link[], from: string, to: string): string[] {
   const has = (a: string, b: string) => links.some((l) => l.from === a && l.to === b);
   if (has(from, to)) return [`${from}>${to}`];
-  if (has(from, 'critic') && has('critic', to)) return [`${from}>critic`, `critic>${to}`];
-  return [];
+  const via = links.find((l) => l.from === from && has(l.to, to))?.to;
+  return via ? [`${from}>${via}`, `${via}>${to}`] : [];
 }
 
 const MODE_SHORT: Record<string, string> = {

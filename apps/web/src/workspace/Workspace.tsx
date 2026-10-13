@@ -23,7 +23,14 @@ import {
   type EdgeChange,
   type NodeChange,
 } from '@xyflow/react';
-import { buildPipeline, validateLink, type GraphNode } from '@cms/agents/graph';
+import {
+  BRIEF,
+  OWNER,
+  TEAM_ROLE_LABEL,
+  buildPipeline,
+  validateLink,
+  type GraphNode,
+} from '@cms/agents/graph';
 import { api, type LiveEvent, type WorkspaceData, type WorkspaceLinkData } from '../api';
 import { STATUS_LABEL, usd } from '../format';
 import { Icon } from '../icons';
@@ -39,7 +46,7 @@ import {
   useWorkspace,
 } from '../queries';
 import { navigate } from '../router';
-import { Button, Empty, ErrorBox, Link, Loading, Modal, useAction, useToast } from '../ui';
+import { Button, Empty, ErrorBox, Link, Loading, Modal, Pill, useAction, useToast } from '../ui';
 import { AgentDrawer, PauseButton, type DrawerTab } from '../components/AgentDrawer';
 import {
   StatePill,
@@ -52,7 +59,8 @@ import {
 } from './nodes';
 import { demoScript, type DemoFrame } from './demo';
 import { replayFrames } from './replay';
-import { Library, TEMPLATE_DND } from './Library';
+import { Library, TEMPLATE_DND, type AddTab } from './Library';
+import { DeleteAgentDialog } from '../components/DeleteAgentDialog';
 
 /** Below this the output points get too small to catch: the board scrolls instead. */
 const MIN_READABLE_ZOOM = 0.55;
@@ -97,7 +105,7 @@ function WorkspaceInner() {
     });
   });
   const { data: events } = useEvents(mode === 'polling' ? 3000 : false);
-  const [sel, setSel] = useState<Selection>({ type: 'node', id: 'ceo' });
+  const [sel, setSel] = useState<Selection | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
   const { data: path } = useTaskPath(taskId);
   const { data: runEvents } = useRunEvents(taskId);
@@ -107,6 +115,7 @@ function WorkspaceInner() {
   const [demoFeed, setDemoFeed] = useState<LiveEvent[]>([]);
   const demoTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [confirmLink, setConfirmLink] = useState<WorkspaceLinkData | null>(null);
+  const [confirmAgent, setConfirmAgent] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<{ id: string; tab: DrawerTab } | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<BoardNode>([]);
   // Linking by clicks: the card whose output point was clicked (then click the receiver).
@@ -139,7 +148,11 @@ function WorkspaceInner() {
   );
   const fitted = useRef(false);
   // «+ Агент» opens the library next to the board (cards can be dropped onto it).
-  const [library, setLibrary] = useState(false);
+  const [library, setLibrary] = useState<AddTab | null>(null);
+  const basicTeam = useAction(
+    () => api.post('/api/library/team'),
+    () => setTimeout(() => fitBoard(), 300),
+  );
   const addTemplate = useAction(
     (v: { templateId: string; position: { x: number; y: number } }) =>
       api.post('/api/library/add', v),
@@ -180,7 +193,14 @@ function WorkspaceInner() {
   const pathNodes = useMemo(() => new Map(path?.nodes.map((n) => [n.agent, n]) ?? []), [path]);
   const pathLinks = useMemo(() => {
     if (!path?.pipeline) return null;
-    const used = new Set(['brief', 'ceo', 'me', ...path.nodes.map((n) => n.agent)]);
+    const p = path.pipeline;
+    const planner = p.planner ?? p.links.find((l) => l.from === BRIEF)?.to;
+    const used = new Set([
+      BRIEF,
+      OWNER,
+      ...(planner ? [planner] : []),
+      ...path.nodes.map((n) => n.agent),
+    ]);
     return { used, links: new Set(path.pipeline.links.map((l) => `${l.from}>${l.to}`)) };
   }, [path]);
 
@@ -243,14 +263,13 @@ function WorkspaceInner() {
             : 'не участвует в задаче'
           : st === 'working' || st === 'waiting'
             ? (n.card?.currentTask?.title ?? n.role)
-            : n.status === 'planned'
-              ? 'появится на следующих этапах'
-              : 'нет задачи';
+            : 'нет задачи';
       return {
         id: n.id,
         type: n.kind === 'human' ? 'human' : 'agent',
         position: n.position,
-        deletable: false,
+        // Delete on a card asks first (onBeforeDelete); «Бриф» and «Вы» are not agents.
+        deletable: n.kind !== 'human',
         selected: sel?.type === 'node' && sel.id === n.id,
         data: {
           node: n,
@@ -345,7 +364,6 @@ function WorkspaceInner() {
           active: l.active,
           dim: !!pathLinks && !demo && !onPath,
           deletable: l.deletable,
-          system: l.kind === 'system',
           onDelete: () => setConfirmLink(l),
         },
       };
@@ -450,12 +468,14 @@ function WorkspaceInner() {
     };
   }, [fitBoard]);
 
+  // Delete / Backspace: nothing goes without a question; the dialog does the deleting.
   const onBeforeDelete = useCallback(
-    async ({ edges: del }: { nodes: BoardNode[]; edges: BoardEdge[] }) => {
-      const e = del[0];
-      const link = e && data?.links.find((l) => l.id === e.id);
-      if (link?.deletable) setConfirmLink(link);
-      else if (link) toast('Это связь основного конвейера, её удалить нельзя', false);
+    async ({ nodes: delNodes, edges: del }: { nodes: BoardNode[]; edges: BoardEdge[] }) => {
+      const n = delNodes.find((x) => x.type === 'agent');
+      const link = del[0] && data?.links.find((l) => l.id === del[0]!.id);
+      if (n) setConfirmAgent(n.id);
+      else if (link) setConfirmLink(link);
+      else if (delNodes.length) toast(HUMAN_NODE_HINT, false);
       return Promise.resolve(false);
     },
     [data, toast],
@@ -603,8 +623,8 @@ function WorkspaceInner() {
             </Button>
             <Button
               className="btn-sm"
-              aria-expanded={library}
-              onClick={() => setLibrary((v) => !v)}
+              aria-expanded={!!library}
+              onClick={() => setLibrary((v) => (v ? null : 'library'))}
             >
               <Icon name="plus" /> Агент
             </Button>
@@ -625,6 +645,30 @@ function WorkspaceInner() {
               });
             }}
           >
+            {!data.nodes.some((n) => n.kind !== 'human') && (
+              <div className="ws-empty card stack" role="region" aria-label="Соберите команду">
+                <h2>Соберите команду</h2>
+                <p className="small muted">
+                  На доске пока нет агентов — задачи будут ждать в «приёме». Нужен хотя бы
+                  планировщик: он получает бриф и строит план.
+                </p>
+                <Button
+                  variant="primary"
+                  busy={basicTeam.isPending}
+                  onClick={() => basicTeam.mutate(undefined)}
+                >
+                  Базовая команда
+                </Button>
+                <span className="faint small">
+                  Планировщик, Копирайтер и Проверяющий из библиотеки, связаны, проверены на mock и
+                  включены.
+                </span>
+                <div className="row wrap">
+                  <Button onClick={() => setLibrary('library')}>Выбрать из библиотеки</Button>
+                  <Button onClick={() => setLibrary('empty')}>Создать с нуля</Button>
+                </div>
+              </div>
+            )}
             <ReactFlow<BoardNode, BoardEdge>
               nodes={nodes}
               edges={edges}
@@ -760,16 +804,22 @@ function WorkspaceInner() {
           onDrawer={(id, tab) => setDrawer({ id, tab })}
           onDeleteLink={setConfirmLink}
           onAddLink={tryLink}
-          onToggleSeo={(from, on) => {
-            const existing = data.links.find((l) => l.from === from && l.to === 'seo');
-            if (on && !existing) addLink.mutate({ from, to: 'seo' });
-            if (!on && existing?.deletable) delLink.mutate(existing.id);
+          onToggleLink={(from, to, on) => {
+            const existing = data.links.find((l) => l.from === from && l.to === to);
+            if (on && !existing) addLink.mutate({ from, to });
+            if (!on && existing) delLink.mutate(existing.id);
           }}
+          onDeleteAgent={setConfirmAgent}
           approvals={approvals?.count ?? 0}
         />
       </div>
       {library && (
-        <Library onClose={() => setLibrary(false)} onAdded={(id) => setSel({ type: 'node', id })} />
+        <Library
+          key={library}
+          tab={library}
+          onClose={() => setLibrary(null)}
+          onAdded={(id) => setSel({ type: 'node', id })}
+        />
       )}
       {confirmLink && (
         <Modal title="Удалить связь?" onClose={() => setConfirmLink(null)}>
@@ -793,6 +843,20 @@ function WorkspaceInner() {
           </div>
         </Modal>
       )}
+      {confirmAgent && data.nodes.some((x) => x.id === confirmAgent) && (
+        <DeleteAgentDialog
+          agent={data.nodes.find((x) => x.id === confirmAgent)!}
+          lastPlanner={
+            data.nodes.find((x) => x.id === confirmAgent)?.teamRole === 'planner' &&
+            data.nodes.filter((x) => x.kind !== 'human' && x.teamRole === 'planner').length === 1
+          }
+          onClose={() => setConfirmAgent(null)}
+          onDeleted={() => {
+            setConfirmAgent(null);
+            setSel(null);
+          }}
+        />
+      )}
       {drawer && (
         <AgentDrawer
           agentId={drawer.id}
@@ -811,7 +875,8 @@ function SidePanel({
   onDrawer,
   onDeleteLink,
   onAddLink,
-  onToggleSeo,
+  onToggleLink,
+  onDeleteAgent,
   approvals,
 }: {
   ws: WorkspaceData;
@@ -819,7 +884,8 @@ function SidePanel({
   onDrawer: (id: string, tab: DrawerTab) => void;
   onDeleteLink: (l: WorkspaceLinkData) => void;
   onAddLink: (from: string, to: string) => void;
-  onToggleSeo: (from: string, on: boolean) => void;
+  onToggleLink: (from: string, to: string, on: boolean) => void;
+  onDeleteAgent: (id: string) => void;
   approvals: number;
 }) {
   const nameOf = (id: string) => ws.nodes.find((n) => n.id === id)?.name ?? id;
@@ -846,13 +912,9 @@ function SidePanel({
         {!l.active && (
           <div className="warn small">Пока не работает: один из агентов ещё не активен.</div>
         )}
-        {l.deletable ? (
-          <Button variant="danger" onClick={() => onDeleteLink(l)}>
-            <Icon name="trash" /> Удалить связь
-          </Button>
-        ) : (
-          <div className="muted small">Связь основного конвейера — удалить нельзя.</div>
-        )}
+        <Button variant="danger" onClick={() => onDeleteLink(l)}>
+          <Icon name="trash" /> Удалить связь
+        </Button>
       </aside>
     );
   }
@@ -865,7 +927,8 @@ function SidePanel({
       <aside className="side-panel stack">
         <h2>{n.name}</h2>
         <p className="muted">{n.description}</p>
-        {n.id === 'brief' ? (
+        <p className="faint small">{HUMAN_NODE_HINT}</p>
+        {n.id === BRIEF ? (
           <Link to="/tasks/new" className="btn btn-primary">
             <Icon name="plus" /> Новая задача
           </Link>
@@ -878,8 +941,10 @@ function SidePanel({
     );
   }
   const card = n.card;
-  const seo = ws.nodes.find((x) => x.id === 'seo');
-  const seoLink = ws.links.find((l) => l.from === n.id && l.to === 'seo');
+  // «Приёмка»: agents with the acceptor role get everything that is ready (SEO and the like).
+  const acceptors = ws.nodes.filter(
+    (x) => x.kind !== 'human' && x.teamRole === 'acceptor' && x.id !== n.id,
+  );
   return (
     <aside className="side-panel stack" style={{ '--agent': agentVar(n.color) } as CSSProperties}>
       <div className="row">
@@ -890,6 +955,10 @@ function SidePanel({
           <h2>{n.name}</h2>
           <small>{n.role}</small>
         </div>
+      </div>
+      <div className="row wrap">
+        {n.teamRole && <Pill tone="accent">{TEAM_ROLE_LABEL[n.teamRole]}</Pill>}
+        {n.capabilityName && <Pill tone="info">{n.capabilityName}</Pill>}
       </div>
       <div>
         <StatePill
@@ -932,24 +1001,11 @@ function SidePanel({
         {n.status !== 'active' && (
           <>
             <dt>Статус</dt>
-            <dd>
-              {n.status === 'planned' ? 'запланирован — связи с ним заработают сами' : 'черновик'}
-            </dd>
+            <dd>черновик — работать начнёт после теста и включения</dd>
           </>
         )}
       </dl>
       <LinkEditor ws={ws} from={n.id} onAdd={onAddLink} onDelete={onDeleteLink} />
-      {card && n.kind === 'code' && n.status === 'active' && (
-        <div className="row wrap">
-          <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
-          <Button onClick={() => onDrawer(n.id, 'test')}>
-            <Icon name="test" /> Тест
-          </Button>
-          <Button variant="primary" onClick={() => onDrawer(n.id, 'overview')}>
-            <Icon name="settings" /> Настроить
-          </Button>
-        </div>
-      )}
       {n.tool && (
         <details className="tool-params" open>
           <summary>Параметры</summary>
@@ -970,37 +1026,48 @@ function SidePanel({
           <div className="faint small">
             Меняются в .env и после перезапуска; из панели — только чтение.
           </div>
-          {n.id === 'mailer_send' && <Link to="/mailing">Открыть «Рассылку»</Link>}
-          {(n.id === 'stt_voice' || n.id === 'video_transcribe') && (
+          {n.capability === 'mailer_send' && <Link to="/mailing">Открыть «Рассылку»</Link>}
+          {(n.capability === 'stt_voice' || n.capability === 'video_transcribe') && (
             <Link to="/transcripts">Открыть «Расшифровки»</Link>
           )}
         </details>
       )}
-      {n.kind === 'constructor' && (
-        <div className="row wrap">
-          {card && n.status === 'active' && (
-            <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
-          )}
-          <Button variant="primary" onClick={() => navigate(`/agents/${n.id}/build`)}>
-            <Icon name="settings" /> {n.status === 'active' ? 'Конструктор' : 'Собрать агента'}
-          </Button>
-          <Button onClick={() => navigate(`/agents/${n.id}/blocks`)}>
-            <Icon name="layout" /> Блоки
-          </Button>
-          <SaveToLibrary agentId={n.id} />
-        </div>
-      )}
-      {seo && n.id !== 'seo' && (
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={!!seoLink}
-            disabled={!!seoLink && !seoLink.deletable}
-            onChange={(e) => onToggleSeo(n.id, e.target.checked)}
-          />
-          Результат проходит приёмку SEO-менеджера
-        </label>
-      )}
+      <div className="row wrap">
+        {card && n.status === 'active' && (
+          <PauseButton agentId={n.id} paused={card.controls.paused} name={n.name} />
+        )}
+        <Button variant="primary" onClick={() => navigate(`/agents/${n.id}/build`)}>
+          <Icon name="settings" /> {n.status === 'active' ? 'Конструктор' : 'Собрать агента'}
+        </Button>
+        <Button onClick={() => navigate(`/agents/${n.id}/blocks`)}>
+          <Icon name="layout" /> Блоки
+        </Button>
+        {n.status === 'active' && (
+          <>
+            <Button onClick={() => onDrawer(n.id, 'test')}>
+              <Icon name="test" /> Тест
+            </Button>
+            <Button onClick={() => onDrawer(n.id, 'overview')}>Настроить</Button>
+          </>
+        )}
+      </div>
+      <SaveToLibrary agentId={n.id} />
+      {acceptors.map((acc) => {
+        const accLink = ws.links.find((l) => l.from === n.id && l.to === acc.id);
+        return (
+          <label key={acc.id} className="switch">
+            <input
+              type="checkbox"
+              checked={!!accLink}
+              onChange={(e) => onToggleLink(n.id, acc.id, e.target.checked)}
+            />
+            Результат проходит приёмку «{acc.name}»
+          </label>
+        );
+      })}
+      <Button variant="danger" onClick={() => onDeleteAgent(n.id)}>
+        <Icon name="trash" /> Удалить агента
+      </Button>
     </aside>
   );
 }
@@ -1035,20 +1102,14 @@ function LinkEditor({
             → {nameOf(l.to)}
             {!l.active && <span className="warn"> · не работает, пока агент не активен</span>}
           </span>
-          {l.deletable ? (
-            <button
-              type="button"
-              className="linklike danger"
-              aria-label={`Удалить связь с ${nameOf(l.to)}`}
-              onClick={() => onDelete(l)}
-            >
-              <Icon name="trash" />
-            </button>
-          ) : (
-            <span className="faint" title="Связь основного конвейера">
-              основная
-            </span>
-          )}
+          <button
+            type="button"
+            className="linklike danger"
+            aria-label={`Удалить связь с ${nameOf(l.to)}`}
+            onClick={() => onDelete(l)}
+          >
+            <Icon name="trash" />
+          </button>
         </div>
       ))}
       <label className="small" htmlFor={`link-to-${from}`}>
@@ -1083,6 +1144,9 @@ function LinkEditor({
     </div>
   );
 }
+
+export const HUMAN_NODE_HINT =
+  '«Бриф» и «Вы» — не агенты: это вход задачи и ваше согласование. Их нельзя удалить.';
 
 /** «В библиотеку»: the constructor agent becomes the owner's template (a new version each time). */
 function SaveToLibrary({ agentId }: { agentId: string }) {

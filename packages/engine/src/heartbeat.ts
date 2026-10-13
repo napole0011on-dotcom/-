@@ -23,7 +23,7 @@ export function startWorkerHeartbeat(
     try {
       await db
         .insert(workerHeartbeats)
-        .values({ worker, pid: process.pid, startedAt, beatAt: new Date() })
+        .values({ worker, pid: process.pid, startedAt, beatAt: sql`now()` })
         .onConflictDoUpdate({
           target: workerHeartbeats.worker,
           set: { pid: process.pid, startedAt, beatAt: sql`now()` },
@@ -39,7 +39,9 @@ export function startWorkerHeartbeat(
     // A clean stop: the panel shows «не запущен» right away instead of after the timeout.
     await db
       .delete(workerHeartbeats)
-      .where(sql`${workerHeartbeats.worker} = ${worker} and ${workerHeartbeats.pid} = ${process.pid}`)
+      .where(
+        sql`${workerHeartbeats.worker} = ${worker} and ${workerHeartbeats.pid} = ${process.pid}`,
+      )
       .catch(() => undefined);
   };
 }
@@ -52,14 +54,15 @@ export interface WorkerStatus {
 }
 
 export async function workerStatus(db: DbOrTx, worker = 'bot'): Promise<WorkerStatus> {
+  // Age by the database clock: the bot and the API may run on machines with different clocks.
   const [r] = await db
-    .select()
+    .select({
+      beatAt: workerHeartbeats.beatAt,
+      startedAt: workerHeartbeats.startedAt,
+      alive: sql<boolean>`${workerHeartbeats.beatAt} > now() - make_interval(secs => ${WORKER_DEAD_AFTER_MS / 1000})`,
+    })
     .from(workerHeartbeats)
     .where(sql`${workerHeartbeats.worker} = ${worker}`);
   if (!r) return { alive: false, beatAt: null, startedAt: null };
-  return {
-    alive: Date.now() - r.beatAt.getTime() < WORKER_DEAD_AFTER_MS,
-    beatAt: r.beatAt,
-    startedAt: r.startedAt,
-  };
+  return { alive: r.alive, beatAt: r.beatAt, startedAt: r.startedAt };
 }

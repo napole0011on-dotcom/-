@@ -74,19 +74,17 @@ describe('planner by role', () => {
     expect(choosePlanner(NODES, team())).toEqual({ id: 'p' });
     expect(choosePlanner(NODES, [])).toEqual({ id: 'p' });
     const two = [...NODES, node('p2', 'planner')];
-    expect(choosePlanner(two, [])).toMatchObject({ problem: expect.stringMatching(/несколько/) });
+    expect(choosePlanner(two, []).problem).toMatch(/несколько/);
     expect(choosePlanner(two, [link('brief', 'p2')])).toEqual({ id: 'p2' });
-    expect(choosePlanner(two, [link('brief', 'p'), link('brief', 'p2')])).toMatchObject({
-      problem: expect.stringMatching(/Оставьте одну связь/),
-    });
+    expect(choosePlanner(two, [link('brief', 'p'), link('brief', 'p2')]).problem).toMatch(
+      /Оставьте одну связь/,
+    );
     const none = NODES.filter((n) => n.teamRole !== 'planner');
-    expect(choosePlanner(none, [])).toMatchObject({
-      problem: expect.stringMatching(/^Нет планировщика: создайте агента с ролью «Планировщик»/),
-    });
+    expect(choosePlanner(none, []).problem).toMatch(
+      /^Нет планировщика: создайте агента с ролью «Планировщик»/,
+    );
     const draft = NODES.map((n) => (n.id === 'p' ? { ...n, status: 'draft' as const } : n));
-    expect(choosePlanner(draft, [])).toMatchObject({
-      problem: expect.stringMatching(/не включён/),
-    });
+    expect(choosePlanner(draft, []).problem).toMatch(/не включён/);
   });
 });
 

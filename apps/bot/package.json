@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "tsx watch --conditions=@cms/source src/main.ts",
     "start": "node dist/main.js",
-    "smoke": "tsx --conditions=@cms/source src/smoke.ts"
+    "smoke": "tsx --conditions=@cms/source src/smoke.ts",
+    "library:sync": "tsx --conditions=@cms/source src/library-sync.ts"
   }
 }

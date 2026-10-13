@@ -12,8 +12,6 @@ import {
   validateLink,
   type GraphLink,
   type GraphNode,
-  type NodeKind,
-  type NodeStatus,
   type Pipeline,
   type TeamRole,
 } from './graph.js';
@@ -137,8 +135,8 @@ export async function loadWorkspace(db: Db, brandId: string): Promise<Workspace>
       name: d.name,
       role: d.role,
       description: d.description,
-      kind: (d.kind === 'human' ? 'human' : 'custom') as NodeKind,
-      status: (d.status === 'active' ? 'active' : 'draft') as NodeStatus,
+      kind: d.kind === 'human' ? ('human' as const) : ('custom' as const),
+      status: d.status === 'active' ? ('active' as const) : ('draft' as const),
       color: d.color,
       icon: d.icon,
       modelRole: d.modelRole,
@@ -209,8 +207,8 @@ export async function addLink(
     const nodes = (await liveDefs(tx, brandId)).map((d) => ({
       id: d.id,
       name: d.name,
-      kind: (d.kind === 'human' ? 'human' : 'custom') as NodeKind,
-      status: (d.status === 'active' ? 'active' : 'draft') as NodeStatus,
+      kind: d.kind === 'human' ? ('human' as const) : ('custom' as const),
+      status: d.status === 'active' ? ('active' as const) : ('draft' as const),
       teamRole: d.teamRole as TeamRole | null,
       capability: d.capability,
     }));

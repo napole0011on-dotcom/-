@@ -22,29 +22,29 @@ fields:
     label: Текст
     type: long_text
     required: true
-    hint: ""
+    hint: ''
   - key: body_html
     label: HTML
     type: long_text
     required: true
-    hint: ""
+    hint: ''
   - key: short_version
     label: Короткий вариант
     type: long_text
     required: true
-    hint: ""
+    hint: ''
   - key: merge_fields_used
     label: Поля подстановки
     type: list
     required: false
-    hint: ""
+    hint: ''
   - key: spam_risk_notes
     label: Риски спама
     type: list
     required: false
-    hint: ""
+    hint: ''
 criteria:
-  - "нет спам-триггеров: капслок, «БЕСПЛАТНО», много «!»"
+  - 'нет спам-триггеров: капслок, «БЕСПЛАТНО», много «!»'
   - в тексте и HTML есть ссылка отписки {{unsubscribe_url}}
   - используются только поля {{name}} и {{unsubscribe_url}}
   - тема не длиннее 60 символов

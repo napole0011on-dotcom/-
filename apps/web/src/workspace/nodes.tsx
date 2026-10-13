@@ -24,7 +24,6 @@ export type NodeState =
   | 'disabled'
   | 'idle'
   | 'pending'
-  | 'planned'
   | 'draft';
 
 export interface BoardNodeData extends Record<string, unknown> {
@@ -51,7 +50,6 @@ export interface BoardEdgeData extends Record<string, unknown> {
   active: boolean;
   dim: boolean;
   deletable: boolean;
-  system: boolean;
   onDelete: () => void;
 }
 export type BoardEdge = Edge<BoardEdgeData>;
@@ -66,7 +64,6 @@ const STATE_LABEL: Record<NodeState, string> = {
   disabled: 'выключен',
   idle: 'свободен',
   pending: 'не начат',
-  planned: 'запланирован',
   draft: 'черновик',
 };
 const STATE_TONE: Record<NodeState, string> = {
@@ -79,7 +76,6 @@ const STATE_TONE: Record<NodeState, string> = {
   disabled: 'var(--st-idle)',
   idle: 'var(--st-idle)',
   pending: 'var(--st-idle)',
-  planned: 'var(--st-idle)',
   draft: 'var(--st-idle)',
 };
 
@@ -99,7 +95,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
   const inactive = n.status !== 'active';
   const cls = [
     'ws-node',
-    n.kind === 'tool' ? 'tool' : '',
+    n.tool ? 'tool' : '',
     inactive ? 'inactive' : '',
     data.dim ? 'dimmed' : '',
     data.state === 'error' ? 'error' : '',
@@ -117,7 +113,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
       {data.verdict !== null && (
         <span
           className={`ws-node-verdict ${data.verdict ? 'ok' : 'bad'}`}
-          title={data.verdict ? 'Critic: принято' : 'Critic: были замечания'}
+          title={data.verdict ? 'Проверка: принято' : 'Проверка: были замечания'}
         >
           {data.verdict ? '✓' : '✗'}
         </span>
@@ -128,7 +124,7 @@ export const AgentNode = memo(function AgentNode({ data }: NodeProps<BoardNode>)
         </div>
         <div className="title-block">
           <b className="clamp-1">{n.name}</b>
-          <small className="clamp-1">{n.kind === 'tool' ? `инструмент · ${n.role}` : n.role}</small>
+          <small className="clamp-1">{n.tool ? `инструмент · ${n.role}` : n.role}</small>
         </div>
       </div>
       <StatePill state={data.state} />
@@ -246,13 +242,9 @@ export const FlowEdge = memo(function FlowEdge(props: EdgeProps<BoardEdge>) {
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {selected ? (
-              d.deletable ? (
-                <button type="button" className="linklike danger" onClick={d.onDelete}>
-                  <Icon name="trash" /> Удалить связь
-                </button>
-              ) : (
-                <span>основной конвейер — удалить нельзя</span>
-              )
+              <button type="button" className="linklike danger" onClick={d.onDelete}>
+                <Icon name="trash" /> Удалить связь
+              </button>
             ) : (
               <span>не работает: агент не активен</span>
             )}
@@ -276,7 +268,6 @@ export function nodeState(
     taskSelected: boolean;
   },
 ): NodeState {
-  if (n.status === 'planned') return 'planned';
   if (n.status === 'draft') return 'draft';
   if (opts.demo === 'work') return 'working';
   if (opts.demo === 'done') return 'done';
