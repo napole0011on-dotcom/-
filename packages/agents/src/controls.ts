@@ -55,6 +55,8 @@ export function agentsForRun(run: Pick<Run, 'input'>): string[] {
       const i = run.input as { agent: string; reviewed?: boolean };
       return i.reviewed ? [i.agent, 'critic'] : [i.agent];
     }
+    case 'route':
+      return []; // the dispatcher is not an agent: pausing an agent does not hold its hand-off
     default:
       return []; // export: no agent involved
   }
@@ -107,7 +109,8 @@ export function makeRunGate(db: Db, health?: ProviderHealth | null) {
       }
     }
     // The LLM provider is down: a step that calls the model waits instead of failing.
-    if (health && needed.some((a) => !TOOLS.some((t) => t.id === a))) {
+    const routes = (run.input as { kind?: string } | null)?.kind === 'route';
+    if (health && (routes || needed.some((a) => !TOOLS.some((t) => t.id === a)))) {
       const v = await health.view();
       if (v.state === 'down' && (v.retryInSeconds ?? 0) > 0) return `provider:${health.provider}`;
     }

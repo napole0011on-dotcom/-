@@ -61,6 +61,12 @@ export interface RunDeps {
   provider?: { recheckSeconds: number; waitMaxMinutes: number };
   /** Buttons for the "provider unavailable, task paused" message (e.g. "Продолжить"). */
   providerPauseButtons?: (taskId: string) => NotifierButton[][];
+  /**
+   * A step of an approved plan that failed for good stops the task on that step (pause
+   * "step_failed:<runId>") instead of failing the whole task; the owner continues from it.
+   * Returns the step name and the message buttons, or null for runs that fail the task.
+   */
+  stopOnFailure?: (run: Run) => { step: string; buttons: NotifierButton[][] } | null;
 }
 
 /** Cap on Retry-After re-deliveries per run, so a permanently throttled run still ends in dead letter. */
@@ -240,6 +246,18 @@ export async function processDeadRun(deps: RunDeps, runId: string): Promise<void
 
 async function failTask(deps: RunDeps, run: Run, err: unknown, dead: boolean) {
   const info = errorToJson(err);
+  const stop = deps.stopOnFailure?.(run) ?? null;
+  if (stop) {
+    const paused = await pauseTask(deps.db, run.taskId, `step_failed:${run.id}`, SYSTEM);
+    if (paused)
+      await deps.notifier.send({
+        text:
+          `⛔ Шаг «${stop.step}» остановился${dead ? ' после всех повторов' : ''}: ${userText(info)}. ` +
+          'Готовое сохранено. Задача на паузе — нажмите «Продолжить с этого шага», когда причина устранена.',
+        buttons: stop.buttons,
+      });
+    return;
+  }
   try {
     await transitionTask(deps.db, {
       taskId: run.taskId,
@@ -254,6 +272,17 @@ async function failTask(deps: RunDeps, run: Run, err: unknown, dead: boolean) {
   await deps.notifier.send({
     text: `Ошибка: агент ${run.agent} не справился${dead ? ' после всех повторов' : ''}. Причина: ${String(info.message)}`,
   });
+}
+
+/** Short reason for the owner: the provider's human-readable text when there is one. */
+function userText(info: Record<string, unknown>): string {
+  const details = (info.details ?? {}) as Record<string, unknown>;
+  const last = (details.lastError ?? {}) as Record<string, unknown>;
+  const lastDetails = (last.details ?? {}) as Record<string, unknown>;
+  const msg = [details.userMessage, lastDetails.userMessage, last.message, info.message].find(
+    (m): m is string => typeof m === 'string' && m.length > 0,
+  );
+  return (msg ?? 'неизвестная ошибка').slice(0, 300);
 }
 
 export interface QueueOptions {

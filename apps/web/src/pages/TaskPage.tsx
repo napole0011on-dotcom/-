@@ -1,4 +1,5 @@
-import { api, type TaskDetail } from '../api';
+import { useState } from 'react';
+import { api, type RouteView, type TaskDetail } from '../api';
 import { DECISION_LABEL, STATUS_LABEL, STATUS_TONE, actorLabel, dateTime, usd } from '../format';
 import { useTask } from '../queries';
 import { Button, ConfirmButton, ErrorBox, Link, Loading, Pill, useAction } from '../ui';
@@ -84,8 +85,11 @@ export function TaskPage({ id }: { id: string }) {
           ⏸ Задача на паузе:{' '}
           {task.pauseReason === 'provider_unavailable'
             ? 'провайдер LLM был недоступен слишком долго'
-            : task.pauseReason}
-          {task.pauseReason === 'provider_unavailable' && (
+            : task.pauseReason?.startsWith('step_failed:')
+              ? 'шаг остановился после всех повторов (причина — в ленте и в Telegram). Готовое сохранено'
+              : task.pauseReason}
+          {(task.pauseReason === 'provider_unavailable' ||
+            task.pauseReason?.startsWith('step_failed:')) && (
             <div className="row">
               <Button variant="primary" busy={resume.isPending} onClick={() => resume.mutate()}>
                 ▶️ Продолжить с этого шага
@@ -124,6 +128,8 @@ export function TaskPage({ id }: { id: string }) {
           />
         )}
       </div>
+
+      {data.routes.length > 0 && <Routes taskId={id} routes={data.routes} />}
 
       <section className="card">
         <h2>Бриф</h2>
@@ -278,5 +284,104 @@ export function TaskPage({ id }: { id: string }) {
         </table>
       </section>
     </>
+  );
+}
+
+const MODE_LABEL: Record<NonNullable<RouteView['mode']>, string> = {
+  single: 'по единственной связи',
+  end: 'дальше связей нет',
+  router: 'решил диспетчер',
+  fallback: 'диспетчер не смог выбрать — по связям',
+  manual: 'вручную',
+  limit: 'лимит передач',
+};
+
+/** Who got each step's result, and «Передать другому» along the plan's links. */
+function Routes({ taskId, routes }: { taskId: string; routes: RouteView[] }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const forward = useAction(
+    (v: { from: string; to: string[] }) => api.post(`/api/tasks/${taskId}/forward`, v),
+    (r) => r.ok && setEditing(null),
+  );
+  const nameOf = (r: RouteView, id: string) => r.candidates.find((c) => c.agent === id)?.name ?? id;
+  return (
+    <section className="card stack">
+      <h2>Кому передан результат</h2>
+      <ul className="route-list">
+        {routes.map((r) => (
+          <li key={r.agent} className="stack">
+            <div className="row between wrap">
+              <span>
+                <b>{r.name}</b> →{' '}
+                {r.targets === null
+                  ? 'решается…'
+                  : r.targets.length
+                    ? r.targets.map((t) => nameOf(r, t)).join(', ')
+                    : 'Вы'}
+              </span>
+              <span className="row small muted">
+                {r.mode && MODE_LABEL[r.mode]}
+                {r.needHelp && <Pill tone="danger">нужна ваша помощь</Pill>}
+                {r.candidates.length > 0 && r.targets !== null && (
+                  <Button
+                    className="btn-sm"
+                    onClick={() => {
+                      setEditing(editing === r.agent ? null : r.agent);
+                      setPicked(r.targets ?? []);
+                    }}
+                  >
+                    Передать другому
+                  </Button>
+                )}
+              </span>
+            </div>
+            {r.targets?.map(
+              (t) =>
+                r.reasons[t] && (
+                  <div key={t} className="small muted">
+                    {nameOf(r, t)}: {r.reasons[t]}
+                  </div>
+                ),
+            )}
+            {editing === r.agent && (
+              <div className="stack forward-editor">
+                <div className="small muted">
+                  Можно передать только по связям из плана задачи. Ничего не выбрано — результат
+                  идёт вам.
+                </div>
+                {r.candidates.map((c) => (
+                  <label key={c.agent} className="row small">
+                    <input
+                      type="checkbox"
+                      checked={picked.includes(c.agent)}
+                      onChange={(e) =>
+                        setPicked((p) =>
+                          e.target.checked ? [...p, c.agent] : p.filter((x) => x !== c.agent),
+                        )
+                      }
+                    />
+                    {c.name}
+                  </label>
+                ))}
+                <div className="row">
+                  <Button
+                    variant="primary"
+                    className="btn-sm"
+                    busy={forward.isPending}
+                    onClick={() => forward.mutate({ from: r.agent, to: picked })}
+                  >
+                    {picked.length ? 'Передать' : 'Отдать мне'}
+                  </Button>
+                  <Button className="btn-sm" variant="ghost" onClick={() => setEditing(null)}>
+                    Отмена
+                  </Button>
+                </div>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

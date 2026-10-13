@@ -32,7 +32,7 @@ function harness() {
     rejectPackage: () => (done.push('reject'), ok('Пакет отклонён')),
     reopenPackage: () => (done.push('reopen'), ok('Пакет снова ждёт вашего решения')),
     approveBudget: (_id, usd) => (done.push(`budget:${usd}`), ok('Добавлено')),
-    resumeAfterProvider: () => (done.push('resume'), ok('Продолжаю')),
+    continueTask: () => (done.push('resume'), ok('Продолжаю')),
     brandInfo: () => Promise.resolve('brand'),
     reloadBrand: () => Promise.resolve('reloaded'),
     listTasks: () => Promise.resolve('tasks'),

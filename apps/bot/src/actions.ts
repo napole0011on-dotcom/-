@@ -40,7 +40,7 @@ export function makeActions(deps: {
     rejectPackage: (id, actor) => workflow.rejectPackage(id, actor),
     reopenPackage: (id, actor) => workflow.reopenPackage(id, actor),
     approveBudget: (id, usd, actor) => workflow.approveBudget(id, usd, actor),
-    resumeAfterProvider: (id, actor) => workflow.resumeAfterProvider(id, actor),
+    continueTask: (id, actor) => workflow.continueTask(id, actor),
     transcribeVoice: (file, chatId, actor) =>
       workflow.transcribeUpload(
         deps.brandId(),

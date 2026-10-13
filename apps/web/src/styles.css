@@ -1596,3 +1596,25 @@ label {
     display: inline-flex;
   }
 }
+
+/* «Кому передан результат» on the task page */
+.route-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.route-list > li {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.route-list > li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.forward-editor {
+  padding: 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}

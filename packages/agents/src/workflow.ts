@@ -78,14 +78,20 @@ import {
   type UpstreamResult,
 } from './nodes.js';
 import { constructorExecutor } from './constructor.js';
-import { constructorSpecOf, resolveAgent } from './agent-registry.js';
+import { constructorSpecOf, listAgents, resolveAgent } from './agent-registry.js';
+import {
+  REQUIRED_TARGETS,
+  ROUTER_PROMPT_VERSION,
+  runRouter,
+  type RouteDecision,
+} from './router.js';
 import { CeoPlan, type CopyItem, type Deliverable } from './schemas.js';
 import { currentPipeline, loadWorkspace } from './workspace.js';
 
 /** Critic may send a text back to the copywriter at most this many times. */
 export const MAX_CRITIC_REVISIONS = 2;
 
-const { tasks, runs } = schema;
+const { tasks, runs, routeDecisions } = schema;
 const ORCHESTRATOR: Actor = { kind: 'agent', id: 'ceo' };
 const SYSTEM: Actor = { kind: 'system', id: 'workflow' };
 
@@ -104,6 +110,8 @@ export type RunInput =
         mode: 'revise' | 'regenerate';
       };
     }
+  /** Dispatcher: who gets the result `sig` of step `agent` next (LLM; only with 2+ links). */
+  | { kind: 'route'; agent: string; sig: string }
   | {
       kind: 'rework';
       deliverableId: string;
@@ -161,6 +169,22 @@ export interface DecisionResult {
 }
 
 type TaskRow = typeof tasks.$inferSelect;
+type RouteRow = typeof routeDecisions.$inferSelect;
+
+/** How a dispatcher decision was made (route_decisions.mode). */
+export type RouteMode = 'single' | 'end' | 'router' | 'fallback' | 'manual' | 'limit';
+
+export interface RouteView {
+  agent: string;
+  name: string;
+  /** Steps this result can go to (outgoing links in the plan). */
+  candidates: { agent: string; name: string }[];
+  /** Current decision: who got the result (empty = straight to you). */
+  targets: string[] | null;
+  mode: RouteMode | null;
+  needHelp: boolean;
+  reasons: Record<string, string>;
+}
 
 export class Workflow {
   /** Owner's agent controls (pause, model, prompts); the panel uses the same instance. */
@@ -466,11 +490,17 @@ export class Workflow {
     return { ok: true, message: `Добавлено $${extraUsd} (${scope}), продолжаю` };
   }
 
-  /** «Продолжить» after the task was paused because the LLM provider was unavailable too long. */
-  async resumeAfterProvider(taskId: string, actor: Actor): Promise<DecisionResult> {
+  /**
+   * «Продолжить»: after the task was paused because the LLM provider was unavailable too long,
+   * or because a step failed for good («Продолжить с этого шага»: the step runs again as a new
+   * run, the finished steps are kept).
+   */
+  async continueTask(taskId: string, actor: Actor): Promise<DecisionResult> {
     const task = await this.task(taskId);
+    if (task.pausedAt && task.pauseReason?.startsWith('step_failed:'))
+      return this.retryStep(task, task.pauseReason.slice('step_failed:'.length), actor);
     if (!task.pausedAt || task.pauseReason !== 'provider_unavailable')
-      return { ok: false, message: 'Задача не ждёт провайдера' };
+      return { ok: false, message: 'Задача не на паузе' };
     await resumeTask(this.d.db, taskId, actor);
     // The wait starts over: the next outage gets the full LLM_PROVIDER_WAIT_MAX_MINUTES again.
     await this.d.db
@@ -480,6 +510,49 @@ export class Workflow {
     for (const run of await queuedRunsOfTask(this.d.db, taskId)) await this.d.enqueue(run.id);
     return { ok: true, message: 'Продолжаю с того же шага' };
   }
+
+  private async retryStep(task: TaskRow, runId: string, actor: Actor): Promise<DecisionResult> {
+    if (actor.kind !== 'human') return { ok: false, message: 'Продолжить может только владелец' };
+    const [failed] = await this.d.db
+      .select()
+      .from(runs)
+      .where(sql`${runs.id} = ${runId} and ${runs.taskId} = ${task.id}`);
+    if (!failed) return { ok: false, message: 'Упавший шаг не найден' };
+    // One retry run per failed run: a double press creates nothing new.
+    const { run } = await createRun(this.d.db, {
+      brandId: task.brandId,
+      taskId: task.id,
+      agent: failed.agent,
+      idempotencyKey: `${failed.idempotencyKey}:again:${failed.id}`,
+      input: failed.input as RunInput,
+    });
+    await resumeTask(this.d.db, task.id, actor);
+    await this.d.db.insert(schema.auditLog).values({
+      brandId: task.brandId,
+      taskId: task.id,
+      actorKind: actor.kind,
+      actorId: actor.id,
+      action: 'step_retried',
+      details: { failedRunId: failed.id, runId: run.id, agent: failed.agent },
+    });
+    for (const r of await queuedRunsOfTask(this.d.db, task.id)) await this.d.enqueue(r.id);
+    return { ok: true, message: 'Продолжаю с этого шага' };
+  }
+
+  /**
+   * Queue hook: a failed step of an approved plan stops the task on that step instead of
+   * failing it (the plan and the export keep the old behaviour).
+   */
+  readonly stopOnFailure = (run: Run) => {
+    const i = run.input as RunInput;
+    if (!['copy', 'rework', 'node', 'route'].includes(i.kind)) return null;
+    const agent = 'agent' in i ? i.agent : 'copywriter';
+    const name = agentById(agent)?.name ?? agent;
+    return {
+      step: i.kind === 'route' ? `${name} · диспетчер` : name,
+      buttons: [[{ text: '▶️ Продолжить с этого шага', data: cb.task('rs', run.taskId) }]],
+    };
+  };
 
   /** «Проверить провайдера»: one tiny request; a success lets waiting runs go right away. */
   async checkProvider(brandId: string) {
@@ -505,6 +578,8 @@ export class Workflow {
         return this.reworkStep(run, task, ctx, input);
       case 'node':
         return this.nodeStep(run, task, ctx, input);
+      case 'route':
+        return this.routeStep(run, task, ctx, input);
       case 'export':
         return this.exportStep(run, task);
       case 'transcribe':
@@ -970,7 +1045,7 @@ export class Workflow {
           items: [{ file: t.name, text: t.text }],
         });
     }
-    for (const dep of step.after) {
+    for (const dep of await this.forwardingDeps(taskId, step)) {
       const arts = await this.stepArtifacts(taskId, dep);
       if (dep === COPYWRITER) {
         out.push({
@@ -1009,15 +1084,19 @@ export class Workflow {
       const i = r.input as RunInput;
       if (i.kind === 'copy' || i.kind === 'rework') out.add(COPYWRITER);
       else if (i.kind === 'node') out.add(i.agent);
+      else if (i.kind === 'route') out.add(`route:${i.agent}`);
     }
     return out;
   }
 
   /**
-   * Drives the graph after the plan is approved and after every step: starts each step whose
-   * upstream steps are done (fresh: produced from the current upstream results), re-runs a step
-   * when its upstream changed (e.g. a text was revised), shows finished results to the owner and
-   * moves the task to gate 2 when nothing is left to run. Safe to call repeatedly.
+   * Drives the graph after the plan is approved and after every step. Each step that finished
+   * gets a dispatcher decision (who receives its result): no next step -> «Вы»; one -> handed on
+   * without the LLM; two or more -> the router run decides. A step starts once every step before
+   * it is decided and at least one of them handed it the result; a step nobody handed anything
+   * to is skipped. A step re-runs when its input changed (e.g. a text was revised). Finished
+   * results are shown to the owner, and the task goes to gate 2 when every step is decided or
+   * skipped. Safe to call repeatedly.
    */
   private async advance(taskId: string, current: Run | null): Promise<void> {
     const task = await this.task(taskId);
@@ -1026,46 +1105,88 @@ export class Workflow {
     const pipe = await this.pipelineOf(taskId);
     const planArt = await latestArtifact(this.d.db, taskId, 'plan');
     const active = await this.activeSteps(taskId, current?.id ?? null);
-    const state = new Map<string, { fresh: boolean; arts: Artifact[] }>();
+    const decisions = await this.decisionsOf(taskId);
+    type StepState = {
+      /** Decided (or skipped): nothing more will happen to this step's result. */
+      resolved: boolean;
+      skipped: boolean;
+      arts: Artifact[];
+      forwards: string[];
+    };
+    const state = new Map<string, StepState>();
+    const pending: StepState = { resolved: false, skipped: false, arts: [], forwards: [] };
     for (const step of pipe.steps) {
-      const ready = step.after.every((d) => state.get(d)?.fresh && !active.has(d));
-      if (!ready) {
-        state.set(step.agent, { fresh: false, arts: [] });
+      const deps = step.after.map((d) => state.get(d) ?? pending);
+      if (!deps.every((d) => d.resolved)) {
+        state.set(step.agent, pending);
         continue;
       }
-      const sig = Workflow.sigOf(step.after.flatMap((d) => state.get(d)!.arts));
+      const from = step.after.filter((d) => state.get(d)!.forwards.includes(step.agent));
+      if (step.after.length > 0 && from.length === 0) {
+        state.set(step.agent, { resolved: true, skipped: true, arts: [], forwards: [] });
+        continue;
+      }
+      const sig = Workflow.sigOf(from.flatMap((d) => state.get(d)!.arts));
       const arts = await this.stepArtifacts(taskId, step.agent);
       const fresh =
         arts.length > 0 &&
         arts.every((a) => ((a.content as { inputSig?: string }).inputSig ?? 'root') === sig);
-      state.set(step.agent, { fresh, arts });
-      if (fresh || active.has(step.agent)) continue;
-      if (step.agent === COPYWRITER) {
-        await this.startRun(
-          task.brandId,
-          taskId,
-          COPYWRITER,
-          `task:${taskId}:copy:plan-v${planArt?.version ?? 1}${sig === 'root' ? '' : `:${sig}`}`,
-          { kind: 'copy', inputSig: sig },
-        );
-      } else {
+      if (active.has(step.agent) || active.has(`route:${step.agent}`)) {
+        state.set(step.agent, pending);
+        continue;
+      }
+      if (!fresh) {
+        if (step.agent === COPYWRITER) {
+          await this.startRun(
+            task.brandId,
+            taskId,
+            COPYWRITER,
+            `task:${taskId}:copy:plan-v${planArt?.version ?? 1}${sig === 'root' ? '' : `:${sig}`}`,
+            { kind: 'copy', inputSig: sig },
+          );
+        } else {
+          await this.startRun(
+            task.brandId,
+            taskId,
+            step.agent,
+            `task:${taskId}:node:${step.agent}:${sig}`,
+            {
+              kind: 'node',
+              agent: step.agent,
+              inputSig: sig,
+              reviewed: step.reviewed,
+            },
+          );
+        }
+        active.add(step.agent);
+        state.set(step.agent, pending);
+        continue;
+      }
+      const own = Workflow.sigOf(arts);
+      const decision =
+        decisions.get(`${step.agent}:${own}`) ?? (await this.decideFixed(task, pipe, step, own));
+      if (!decision) {
+        // Two or more next steps: the router decides in its own run.
         await this.startRun(
           task.brandId,
           taskId,
           step.agent,
-          `task:${taskId}:node:${step.agent}:${sig}`,
-          {
-            kind: 'node',
-            agent: step.agent,
-            inputSig: sig,
-            reviewed: step.reviewed,
-          },
+          `task:${taskId}:route:${step.agent}:${own}`,
+          { kind: 'route', agent: step.agent, sig: own },
         );
+        active.add(`route:${step.agent}`);
+        state.set(step.agent, pending);
+        continue;
       }
-      active.add(step.agent);
+      state.set(step.agent, {
+        resolved: true,
+        skipped: false,
+        arts,
+        forwards: decision.targets as string[],
+      });
     }
 
-    const settled = (agent: string) => state.get(agent)?.fresh === true && !active.has(agent);
+    const settled = (agent: string) => state.get(agent)?.resolved === true;
     const downstream = (agent: string): string[] => {
       const direct = pipe.steps.filter((s) => s.after.includes(agent)).map((s) => s.agent);
       return [...direct, ...direct.flatMap(downstream)];
@@ -1080,6 +1201,358 @@ export class Workflow {
       task,
       showable.flatMap((a) => state.get(a)!.arts),
     );
+  }
+
+  // ---------------------------------------------------------------- dispatcher
+
+  /** Steps that receive `agent`'s result (its outgoing links in the plan snapshot). */
+  private static nextSteps(pipe: Pipeline, agent: string): PipelineStep[] {
+    return pipe.steps.filter((s) => s.after.includes(agent));
+  }
+
+  private async decisionsOf(taskId: string): Promise<Map<string, RouteRow>> {
+    const rows = await this.d.db
+      .select()
+      .from(routeDecisions)
+      .where(sql`${routeDecisions.taskId} = ${taskId}`);
+    return new Map(rows.map((r) => [`${r.fromAgent}:${r.fromSig}`, r]));
+  }
+
+  /** Steps before `step` that handed it their current result (all of them for old tasks). */
+  private async forwardingDeps(taskId: string, step: PipelineStep): Promise<string[]> {
+    if (step.after.length === 0) return [];
+    const decisions = await this.decisionsOf(taskId);
+    const out: string[] = [];
+    for (const dep of step.after) {
+      const sig = Workflow.sigOf(await this.stepArtifacts(taskId, dep));
+      const d = decisions.get(`${dep}:${sig}`);
+      if (!d || (d.targets as string[]).includes(step.agent)) out.push(dep);
+    }
+    return out;
+  }
+
+  /**
+   * Hand-offs used since the owner's last decision (plan approval, item decision). The limit
+   * stops a runaway chain; every owner decision gives the task a fresh allowance.
+   */
+  private async hopsUsed(taskId: string): Promise<number> {
+    const { rows } = await this.d.db.execute<{ n: number }>(sql`
+      select coalesce(sum(jsonb_array_length(d.targets)), 0)::int as n
+      from route_decisions d
+      where d.task_id = ${taskId} and d.mode <> 'manual'
+        and d.created_at > coalesce(
+          (select max(a.created_at) from approvals a where a.task_id = ${taskId}),
+          '-infinity'::timestamptz)`);
+    return rows[0]?.n ?? 0;
+  }
+
+  /** Decisions that need no LLM: no next step (-> «Вы») or exactly one. Null: the router decides. */
+  private async decideFixed(
+    task: TaskRow,
+    pipe: Pipeline,
+    step: PipelineStep,
+    sig: string,
+  ): Promise<RouteRow | null> {
+    const next = Workflow.nextSteps(pipe, step.agent);
+    if (next.length > 1) return null;
+    return this.saveDecision(task, pipe, {
+      fromAgent: step.agent,
+      fromSig: sig,
+      targets: next.map((s) => s.agent),
+      mode: next.length ? 'single' : 'end',
+      reasons: next.length ? { [next[0]!.agent]: 'единственная связь на доске' } : {},
+      confidence: null,
+      needHelp: false,
+      decidedBy: 'dispatcher',
+    });
+  }
+
+  /**
+   * Stores a decision once per (task, step, result): audit_log + a "handoff" event for the board.
+   * The hop limit cuts the targets; then the task goes to the owner with what is ready.
+   */
+  private async saveDecision(
+    task: TaskRow,
+    pipe: Pipeline,
+    d: {
+      fromAgent: string;
+      fromSig: string;
+      targets: string[];
+      mode: RouteMode;
+      reasons: Record<string, string>;
+      confidence: number | null;
+      needHelp: boolean;
+      decidedBy: string;
+      runId?: string | null;
+      costUsd?: number | null;
+    },
+    actor: Actor = SYSTEM,
+  ): Promise<RouteRow> {
+    let { targets, mode } = d;
+    const max = this.d.config.routing.maxHops;
+    if (mode !== 'manual' && targets.length > 0) {
+      const left = Math.max(0, max - (await this.hopsUsed(task.id)));
+      if (targets.length > left) {
+        targets = targets.slice(0, left);
+        mode = 'limit';
+      }
+    }
+    const values = {
+      taskId: task.id,
+      fromAgent: d.fromAgent,
+      fromSig: d.fromSig,
+      targets,
+      mode,
+      reasons: d.reasons,
+      confidence: d.confidence == null ? null : d.confidence.toFixed(3),
+      needHelp: d.needHelp,
+      decidedBy: d.decidedBy,
+    };
+    const [row] =
+      mode === 'manual'
+        ? await this.d.db
+            .insert(routeDecisions)
+            .values(values)
+            .onConflictDoUpdate({
+              target: [routeDecisions.taskId, routeDecisions.fromAgent, routeDecisions.fromSig],
+              set: { ...values, updatedAt: sql`now()` },
+            })
+            .returning()
+        : await this.d.db.insert(routeDecisions).values(values).onConflictDoNothing().returning();
+    if (!row) {
+      const [existing] = await this.d.db
+        .select()
+        .from(routeDecisions)
+        .where(
+          sql`${routeDecisions.taskId} = ${task.id} and ${routeDecisions.fromAgent} = ${d.fromAgent} and ${routeDecisions.fromSig} = ${d.fromSig}`,
+        );
+      return existing!;
+    }
+    const name = (id: string) => pipe.steps.find((s) => s.agent === id)?.name ?? id;
+    const why = targets.length === 1 ? d.reasons[targets[0]!] : null;
+    const text =
+      mode === 'limit'
+        ? `${name(d.fromAgent)} → ${targets.length ? targets.map(name).join(', ') : 'Вы'}: достигнут лимит передач (${max}), дальше — к вам с тем, что готово`
+        : d.needHelp
+          ? `${name(d.fromAgent)}: диспетчер не уверен, кому передать результат — решите сами («Передать другому»)`
+          : `${name(d.fromAgent)} → ${targets.length ? targets.map(name).join(', ') : 'Вы'}${why ? `: ${why}` : ''}${mode === 'manual' ? ' (вручную)' : ''}`;
+    await this.d.db.insert(schema.auditLog).values({
+      brandId: task.brandId,
+      taskId: task.id,
+      actorKind: actor.kind,
+      actorId: actor.id,
+      action: mode === 'manual' ? 'route_manual' : 'route_decided',
+      details: {
+        from: d.fromAgent,
+        fromSig: d.fromSig,
+        to: targets,
+        mode,
+        reasons: d.reasons,
+        confidence: d.confidence,
+        needHelp: d.needHelp,
+      },
+    });
+    await emitEvent(
+      this.d.db,
+      {
+        brandId: task.brandId,
+        agent: d.fromAgent,
+        taskId: task.id,
+        runId: d.runId ?? null,
+        kind: 'handoff',
+        text,
+        costUsd: d.costUsd ?? null,
+        payload: {
+          to: targets.length ? targets : ['me'],
+          mode,
+          reasons: d.reasons,
+          confidence: d.confidence,
+          needHelp: d.needHelp,
+        },
+      },
+      this.d.logger,
+    );
+    return row;
+  }
+
+  /** The router run: the LLM picks the next steps among the outgoing links of the plan. */
+  private async routeStep(
+    run: Run,
+    task: TaskRow,
+    ctx: AgentContext,
+    input: Extract<RunInput, { kind: 'route' }>,
+  ) {
+    const pipe = await this.pipelineOf(task.id);
+    const step = pipe.steps.find((s) => s.agent === input.agent);
+    if (!step) throw new PermanentError('step_missing', `Step ${input.agent} is not in the plan`);
+    const arts = await this.stepArtifacts(task.id, input.agent);
+    if (Workflow.sigOf(arts) !== input.sig) {
+      // The result changed while this run waited: a new decision is made for the new result.
+      await this.advance(task.id, run);
+      return { skipped: 'result changed' };
+    }
+    const next = Workflow.nextSteps(pipe, input.agent);
+    const refs = await listAgents(this.d.db, task.brandId);
+    const candidates = next.map((s) => {
+      const r = refs.find((x) => x.id === s.agent);
+      const when = r?.spec.whenToCall;
+      return {
+        id: s.agent,
+        name: s.name,
+        role: r?.role ?? '',
+        description: r?.description ?? '',
+        whenToCall: typeof when === 'string' ? when : null,
+      };
+    });
+    let res: { output: RouteDecision; costUsd: number } | null = null;
+    try {
+      res = await invokeAgent(
+        this.d.db,
+        { id: input.agent, name: `${step.name} · диспетчер` },
+        {
+          brandId: task.brandId,
+          taskId: task.id,
+          runId: run.id,
+          model: ctx.models.classifier,
+          promptVersion: ROUTER_PROMPT_VERSION,
+        },
+        () =>
+          runRouter(ctx, {
+            brief: briefText(task),
+            from: { id: input.agent, name: step.name },
+            result: arts.map((a) => {
+              const c = a.content as Partial<CopyContent & NodeContent>;
+              return c.output ?? { deliverable: c.deliverable?.id, variants: c.item?.variants };
+            }),
+            candidates,
+            step: input.sig,
+          }),
+      );
+    } catch (err) {
+      // A choice outside the links even after 2 corrections: hand on by the links instead.
+      if (!(err instanceof PermanentError && err.code === 'llm_invalid_output')) throw err;
+      this.d.logger.warn({ taskId: task.id, agent: input.agent }, 'router failed; using links');
+    }
+    const out = res?.output;
+    const needHelp = out?.decision === 'need_help';
+    const targets = !out
+      ? next.map((s) => s.agent)
+      : out.decision === 'forward'
+        ? out.targets.map((t) => t.agent)
+        : [];
+    const reasons: Record<string, string> = !out
+      ? Object.fromEntries(next.map((s) => [s.agent, 'диспетчер не смог выбрать — по связям']))
+      : Object.fromEntries(out.targets.map((t) => [t.agent, t.reason]));
+    // SEO cannot be bypassed on the way to the owner.
+    for (const req of REQUIRED_TARGETS) {
+      if (!needHelp && next.some((s) => s.agent === req) && !targets.includes(req)) {
+        targets.push(req);
+        reasons[req] = 'SEO обязателен перед согласованием';
+      }
+    }
+    const row = await this.saveDecision(task, pipe, {
+      fromAgent: input.agent,
+      fromSig: input.sig,
+      targets,
+      mode: out ? 'router' : 'fallback',
+      reasons,
+      confidence: out?.confidence ?? null,
+      needHelp,
+      decidedBy: out ? `router:${ctx.models.classifier}` : 'dispatcher',
+      runId: run.id,
+      costUsd: res?.costUsd ?? null,
+    });
+    if (needHelp)
+      await this.once(`${run.id}:route-help`, () =>
+        this.d.channel
+          .send({
+            text: `🤔 «${task.title}»: диспетчер не уверен, кому передать результат шага «${step.name}». Остальное идёт к вам; если нужно, передайте вручную в панели («Передать другому»).`,
+          })
+          .then(() => undefined),
+      );
+    await this.advance(task.id, run);
+    return { targets: row.targets, mode: row.mode, costUsd: res?.costUsd ?? 0 };
+  }
+
+  /** «Передать другому»: the owner picks who gets a step's current result (empty = to «Вы»). */
+  async forwardManually(
+    taskId: string,
+    from: string,
+    to: string[],
+    actor: Actor,
+  ): Promise<DecisionResult> {
+    if (actor.kind !== 'human')
+      return { ok: false, message: 'Передавать вручную может только владелец' };
+    const task = await this.task(taskId);
+    if (!['in_progress', 'in_review', 'revision', 'awaiting_final_approval'].includes(task.status))
+      return { ok: false, message: 'Задача сейчас не выполняется' };
+    const pipe = await this.pipelineOf(taskId);
+    const step = pipe.steps.find((s) => s.agent === from);
+    if (!step) return { ok: false, message: 'Такого шага нет в плане задачи' };
+    const next = Workflow.nextSteps(pipe, from).map((s) => s.agent);
+    const bad = to.filter((t) => !next.includes(t));
+    if (bad.length)
+      return {
+        ok: false,
+        message: `Передать можно только по связям из плана: ${next.length ? next.join(', ') : 'дальше связей нет'}`,
+      };
+    const arts = await this.stepArtifacts(taskId, from);
+    if (arts.length === 0) return { ok: false, message: 'У шага ещё нет результата' };
+    await this.saveDecision(
+      task,
+      pipe,
+      {
+        fromAgent: from,
+        fromSig: Workflow.sigOf(arts),
+        targets: [...new Set(to)],
+        mode: 'manual',
+        reasons: Object.fromEntries(to.map((t) => [t, 'решение владельца'])),
+        confidence: null,
+        needHelp: false,
+        decidedBy: `${actor.kind}:${actor.id}`,
+      },
+      actor,
+    );
+    if (task.status === 'awaiting_final_approval' && to.length > 0)
+      await transitionTask(this.d.db, {
+        taskId,
+        to: 'revision',
+        actor,
+        reason: `forward ${from}`,
+        details: { from, to },
+      });
+    await this.advance(taskId, null);
+    return {
+      ok: true,
+      message: to.length
+        ? `Передал: ${to.map((t) => pipe.steps.find((s) => s.agent === t)?.name ?? t).join(', ')}`
+        : 'Результат идёт к вам',
+    };
+  }
+
+  /** For the panel: each finished step, where its result went and where it could go. */
+  async routes(taskId: string): Promise<RouteView[]> {
+    const pipe = await this.pipelineOf(taskId);
+    const decisions = await this.decisionsOf(taskId);
+    const out: RouteView[] = [];
+    for (const step of pipe.steps) {
+      const arts = await this.stepArtifacts(taskId, step.agent);
+      if (arts.length === 0) continue;
+      const d = decisions.get(`${step.agent}:${Workflow.sigOf(arts)}`);
+      out.push({
+        agent: step.agent,
+        name: step.name,
+        candidates: Workflow.nextSteps(pipe, step.agent).map((s) => ({
+          agent: s.agent,
+          name: s.name,
+        })),
+        targets: d ? (d.targets as string[]) : null,
+        mode: (d?.mode as RouteMode | undefined) ?? null,
+        needHelp: d?.needHelp ?? false,
+        reasons: (d?.reasons as Record<string, string> | undefined) ?? {},
+      });
+    }
+    return out;
   }
 
   /** in_progress / revision -> in_review -> awaiting_final_approval (idempotent). */

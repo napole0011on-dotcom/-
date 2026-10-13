@@ -274,7 +274,20 @@ export interface TaskActions {
   cancel: boolean;
 }
 
+/** Dispatcher decision for one finished step (who got its result). */
+export interface RouteView {
+  agent: string;
+  name: string;
+  candidates: { agent: string; name: string }[];
+  /** null: not decided yet; [] — to «Вы». */
+  targets: string[] | null;
+  mode: 'single' | 'end' | 'router' | 'fallback' | 'manual' | 'limit' | null;
+  needHelp: boolean;
+  reasons: Record<string, string>;
+}
+
 export interface TaskDetail {
+  routes: RouteView[];
   task: {
     id: string;
     title: string;

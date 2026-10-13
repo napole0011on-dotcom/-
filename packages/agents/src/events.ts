@@ -14,6 +14,8 @@ export type EventKind =
   | 'exported'
   | 'retry'
   | 'wait'
+  /** The dispatcher handed a result on (payload: {to, reasons, mode, confidence}). */
+  | 'handoff'
   | 'info';
 
 export interface AgentEvent {
@@ -24,6 +26,8 @@ export interface AgentEvent {
   kind: EventKind;
   text: string;
   costUsd?: number | null;
+  /** Extra data for the board and the replay (never addresses, keys or prompt text). */
+  payload?: Record<string, unknown> | null;
 }
 
 /**
@@ -40,6 +44,7 @@ export async function emitEvent(db: DbOrTx, e: AgentEvent, logger?: Logger): Pro
       kind: e.kind,
       text: e.text.slice(0, 300),
       costUsd: e.costUsd == null ? null : e.costUsd.toFixed(8),
+      payload: e.payload ?? null,
     });
   } catch (err) {
     logger?.warn({ err: errorToJson(err) }, 'agent event not recorded');
@@ -62,5 +67,6 @@ export async function recentEvents(db: DbOrTx, brandId: string, limit = 50, afte
     kind: r.kind as EventKind,
     text: r.text,
     costUsd: r.costUsd == null ? null : Number(r.costUsd),
+    payload: (r.payload as Record<string, unknown> | null) ?? null,
   }));
 }

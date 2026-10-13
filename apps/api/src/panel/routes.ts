@@ -183,9 +183,9 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
   app.get<{ Params: { id: string } }>('/api/tasks/:id', async (req, reply) => {
     if (!uuid.safeParse(req.params.id).success)
       return reply.code(400).send({ error: 'Неверный id' });
-    return (
-      (await taskDetail(d, req.params.id)) ?? reply.code(404).send({ error: 'Задача не найдена' })
-    );
+    const detail = await taskDetail(d, req.params.id);
+    if (!detail) return reply.code(404).send({ error: 'Задача не найдена' });
+    return { ...detail, routes: await d.workflow.routes(req.params.id) };
   });
   app.get<{ Params: { id: string } }>('/api/runs/:id', async (req, reply) => {
     if (!uuid.safeParse(req.params.id).success)
@@ -362,10 +362,27 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     const r = await d.workflow.checkProvider(brand());
     return reply.code(200).send({ ok: r.ok, message: r.message, latencyMs: r.latencyMs });
   });
+  /** «Передать другому»: the owner hands a step's result on along the plan's links (or to «Вы»). */
+  app.post<{ Params: { id: string }; Body: unknown }>(
+    '/api/tasks/:id/forward',
+    async (req, reply) => {
+      const body = z
+        .object({
+          from: z.string().min(1).max(64),
+          to: z.array(z.string().min(1).max(64)).max(20),
+        })
+        .safeParse(req.body);
+      if (!uuid.safeParse(req.params.id).success || !body.success)
+        return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+      return control(reply, () =>
+        d.workflow.forwardManually(req.params.id, body.data.from, body.data.to, ACTOR),
+      );
+    },
+  );
   app.post<{ Params: { id: string } }>('/api/tasks/:id/resume', async (req, reply) => {
     if (!uuid.safeParse(req.params.id).success)
       return reply.code(400).send({ ok: false, message: 'Неверный id' });
-    return control(reply, () => d.workflow.resumeAfterProvider(req.params.id, ACTOR));
+    return control(reply, () => d.workflow.continueTask(req.params.id, ACTOR));
   });
 
   app.post('/api/controls/stop-all', (_req, reply) =>

@@ -143,6 +143,7 @@ async function main() {
           { text: '✖️ Отменить задачу', data: cb.task('no', taskId) },
         ],
       ],
+      stopOnFailure: (run) => workflow.stopOnFailure(run),
     },
   });
   queueRef.q = queue;

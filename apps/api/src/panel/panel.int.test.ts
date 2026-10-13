@@ -336,8 +336,18 @@ describe('web panel API (Postgres)', () => {
         task: { status: string };
         decisions: { decision: string; by: string; choice: number | null }[];
         actions: { reopenPackage: boolean };
+        routes: { agent: string; targets: string[] | null; mode: string | null }[];
       }>();
       expect(detail.task.status).toBe('exported');
+      // The copywriter has no next step on the default board: its result went to «Вы».
+      expect(detail.routes).toEqual([
+        expect.objectContaining({ agent: 'copywriter', targets: [], mode: 'end' }),
+      ]);
+      // «Передать другому»: validated body; only along the plan's links; not after export.
+      expect((await post(s, `/api/tasks/${taskId}/forward`, { from: 1 })).statusCode).toBe(400);
+      expect(
+        (await post(s, `/api/tasks/${taskId}/forward`, { from: 'copywriter', to: [] })).statusCode,
+      ).toBe(409);
       expect(
         detail.decisions.filter((x) => x.decision === 'approved').map((x) => [x.by, x.choice]),
       ).toEqual([

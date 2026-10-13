@@ -21,6 +21,7 @@ export class MockLlmTransport implements LlmTransport {
     else if (title === 'ImageBriefs') body = mockImages(prompt);
     else if (title === 'KpDraft') body = mockKp(prompt);
     else if (title === 'Agent_mailer_draft') body = mockMail();
+    else if (title === 'RouteDecision') body = mockRoute(prompt);
     else body = schema ? mockFromSchema(schema) : {};
     return Promise.resolve({
       id: `mock_${this.calls}`,
@@ -41,6 +42,22 @@ export class MockLlmTransport implements LlmTransport {
       },
     } as unknown as LlmResponse);
   }
+}
+
+/** Dispatcher: hand the result to every allowed agent (the same as the links would do). */
+function mockRoute(prompt: string) {
+  const line = /Можно передать \(id\): ([^\n]*)/.exec(prompt)?.[1] ?? '';
+  const ids = line
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return ids.length
+    ? {
+        decision: 'forward',
+        targets: ids.map((agent) => ({ agent, reason: '[MOCK] по связи на доске' })),
+        confidence: 0.9,
+      }
+    : { decision: 'done', targets: [], confidence: 0.9 };
 }
 
 type JsonSchema = {
