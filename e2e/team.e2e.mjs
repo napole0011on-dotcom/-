@@ -10,12 +10,20 @@ const { browser, page, errors } = await openPanel();
 const node = (id) => page.locator(`.react-flow__node[data-id="${id}"]`);
 const dialog = () => page.getByRole('dialog', { name: /^Удалить агента/ });
 try {
-  // A clean start on a used database: unfinished tasks cancelled, every agent deleted.
-  for (const t of await api(page, '/api/tasks'))
-    if (!['exported', 'cancelled', 'failed'].includes(t.status))
-      await api(page, `/api/tasks/${t.id}/cancel`, {});
-  for (const n of (await api(page, '/api/workspace')).nodes)
-    if (n.kind !== 'human') await api(page, `/api/agents/${n.id}/delete`, {});
+  // It deletes agents and cancels tasks: only on an empty board, or on a test database with
+  // E2E_RESET=1 (then unfinished tasks are cancelled and every agent is deleted first).
+  const before = await api(page, '/api/workspace');
+  if (before.nodes.some((n) => n.kind !== 'human')) {
+    if (process.env.E2E_RESET !== '1')
+      throw new Error(
+        'FAIL: the board has agents. Run on a test database with E2E_RESET=1 (it deletes them).',
+      );
+    for (const t of await api(page, '/api/tasks'))
+      if (!['exported', 'cancelled', 'failed'].includes(t.status))
+        await api(page, `/api/tasks/${t.id}/cancel`, {});
+    for (const n of before.nodes)
+      if (n.kind !== 'human') await api(page, `/api/agents/${n.id}/delete`, {});
+  }
   await page.reload();
   await node('brief').waitFor();
 
