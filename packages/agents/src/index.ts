@@ -35,3 +35,4 @@ export * from './tools/kp-render.js';
 export * from './tools/mailer.js';
 export * from './compositions.js';
 export * from './blocks.js';
+export * from './library.js';

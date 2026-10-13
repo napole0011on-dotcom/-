@@ -482,6 +482,23 @@ export interface ActionResult {
   version?: number;
 }
 
+/** Agent library: system (read-only) and the owner's templates, latest versions. */
+export interface LibraryTemplate {
+  id: string;
+  slug: string;
+  version: number;
+  system: boolean;
+  category: string;
+  name: string;
+  role: string;
+  description: string;
+  requiresKey: string | null;
+}
+export interface LibraryData {
+  categories: string[];
+  templates: LibraryTemplate[];
+}
+
 /** Agents from blocks: the composition, its versions and the options of the blocks. */
 export interface BlocksData {
   agentId: string;

@@ -78,6 +78,8 @@ packages/agents     агенты и сценарий
                        версии агента конструктора записывается в spec.lastTest (specHash + версия промпта)
   src/blocks.ts        агенты из блоков (общий для API и браузера): типы блоков, порты, validateBlockLink,
                        compileComposition → поля, критерии, промпт, модель, связи на доске
+  src/library.ts       библиотека: системные шаблоны (в коде, только чтение, version), шаблоны владельца
+                       (agent_templates, версии), экспорт/импорт JSON по строгой схеме, «Добавить» → черновик
   src/compositions.ts  версии состава (agent_compositions): сохранить, откатить, «Собрать в агента»
   src/graph.ts         связи как DAG: validateLink, системные связи, buildPipeline (порядок шагов), autoLayout
   src/workspace.ts     реестр узлов (agent_definitions), связи и раскладка в БД, всё через audit_log

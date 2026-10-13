@@ -24,6 +24,13 @@ import {
   loadWorkspace,
   rollbackComposition,
   saveComposition,
+  CATEGORIES,
+  addFromTemplate,
+  exportTemplate,
+  getTemplate,
+  importTemplate,
+  listTemplates,
+  saveAgentAsTemplate,
 } from '@cms/agents';
 import type { ObjectStorage } from '@cms/providers';
 import type { EventHub } from './event-hub.js';
@@ -531,6 +538,47 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
       ),
     );
   });
+  // ---------------------------------------------------------------- agent library
+  const templateId = z.string().regex(/^(sys|own):[a-z][a-z0-9_]{1,39}$/);
+  app.get('/api/library', async () => ({
+    categories: CATEGORIES,
+    templates: await listTemplates(d.db, brand()),
+  }));
+  app.post('/api/library/add', async (req, reply) => {
+    const body = z
+      .object({
+        templateId,
+        position: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
+      })
+      .safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () =>
+      addFromTemplate(d.db, brand(), body.data.templateId, ACTOR, body.data.position),
+    );
+  });
+  app.post('/api/library/save', async (req, reply) => {
+    const body = z
+      .object({ agentId: agentParam, category: z.enum(CATEGORIES) })
+      .safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () =>
+      saveAgentAsTemplate(d.db, brand(), body.data.agentId, body.data.category, ACTOR),
+    );
+  });
+  app.post('/api/library/import', async (req, reply) => {
+    const body = z.object({ file: z.unknown() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () => importTemplate(d.db, brand(), body.data.file, ACTOR));
+  });
+  app.get<{ Params: { id: string } }>('/api/library/export/:id', async (req, reply) => {
+    const id = templateId.safeParse(req.params.id);
+    const t = id.success ? await getTemplate(d.db, brand(), id.data) : null;
+    if (!t) return reply.code(404).send({ error: 'Шаблон не найден' });
+    return reply
+      .header('content-disposition', `attachment; filename="agent-${t.slug}-v${t.version}.json"`)
+      .send(exportTemplate(t));
+  });
+
   // ---------------------------------------------------------------- agents from blocks
   app.get<{ Params: { agent: string } }>('/api/agents/:agent/blocks', async (req, reply) => {
     const agent = agentParam.safeParse(req.params.agent);

@@ -71,6 +71,18 @@ try {
   await page.getByRole('link', { name: /Тест и включение/ }).click();
   await page.getByText('Слоганы', { exact: false }).first().waitFor();
   assert(errors.length === 0, `no page errors ${errors.join('; ')}`);
+  // Clean up: drafts made by this and earlier runs.
+  await page.evaluate(async () => {
+    const s = await (await fetch('/api/session')).json();
+    const ws = await (await fetch('/api/workspace')).json();
+    for (const n of ws.nodes)
+      if (/^Слоганы \d+$/.test(n.name) && n.status !== 'active')
+        await fetch(`/api/agents/${n.id}/delete`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-csrf-token': s.csrfToken },
+          body: '{}',
+        });
+  });
   console.log('blocks e2e: ok');
 } finally {
   await browser.close();

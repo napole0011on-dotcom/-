@@ -32,6 +32,7 @@ import {
   useApprovals,
   useEvents,
   useStatus,
+  useLibrary,
   useRunEvents,
   useTaskPath,
   useTasks,
@@ -51,6 +52,7 @@ import {
 } from './nodes';
 import { demoScript, type DemoFrame } from './demo';
 import { replayFrames } from './replay';
+import { Library, TEMPLATE_DND } from './Library';
 
 /** Below this the output points get too small to catch: the board scrolls instead. */
 const MIN_READABLE_ZOOM = 0.55;
@@ -136,6 +138,13 @@ function WorkspaceInner() {
     [rf],
   );
   const fitted = useRef(false);
+  // «+ Агент» opens the library next to the board (cards can be dropped onto it).
+  const [library, setLibrary] = useState(false);
+  const addTemplate = useAction(
+    (v: { templateId: string; position: { x: number; y: number } }) =>
+      api.post('/api/library/add', v),
+    (r) => r.ok && r.id && setSel({ type: 'node', id: r.id }),
+  );
   // The minimap covers part of the board: shown only on request.
   const [showMap, setShowMap] = useState(false);
 
@@ -592,11 +601,30 @@ function WorkspaceInner() {
             >
               <Icon name="layout" /> Авторасстановка
             </Button>
-            <Button className="btn-sm" onClick={() => navigate('/agents/new')}>
+            <Button
+              className="btn-sm"
+              aria-expanded={library}
+              onClick={() => setLibrary((v) => !v)}
+            >
               <Icon name="plus" /> Агент
             </Button>
           </div>
-          <div className="ws-board">
+          <div
+            className="ws-board"
+            onDragOver={(e) => {
+              if (e.dataTransfer.types.includes(TEMPLATE_DND)) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              const templateId = e.dataTransfer.getData(TEMPLATE_DND);
+              if (!templateId) return;
+              e.preventDefault();
+              const p = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+              addTemplate.mutate({
+                templateId,
+                position: { x: Math.round(p.x), y: Math.round(p.y) },
+              });
+            }}
+          >
             <ReactFlow<BoardNode, BoardEdge>
               nodes={nodes}
               edges={edges}
@@ -740,6 +768,9 @@ function WorkspaceInner() {
           approvals={approvals?.count ?? 0}
         />
       </div>
+      {library && (
+        <Library onClose={() => setLibrary(false)} onAdded={(id) => setSel({ type: 'node', id })} />
+      )}
       {confirmLink && (
         <Modal title="Удалить связь?" onClose={() => setConfirmLink(null)}>
           <div className="modal-text">
@@ -956,6 +987,7 @@ function SidePanel({
           <Button onClick={() => navigate(`/agents/${n.id}/blocks`)}>
             <Icon name="layout" /> Блоки
           </Button>
+          <SaveToLibrary agentId={n.id} />
         </div>
       )}
       {seo && n.id !== 'seo' && (
@@ -1048,6 +1080,32 @@ function LinkEditor({
           <Icon name="link" /> Связать
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** «В библиотеку»: the constructor agent becomes the owner's template (a new version each time). */
+function SaveToLibrary({ agentId }: { agentId: string }) {
+  const { data } = useLibrary();
+  const [cat, setCat] = useState('Контент');
+  const save = useAction(() => api.post('/api/library/save', { agentId, category: cat }));
+  return (
+    <div className="row">
+      <select
+        aria-label="Категория в библиотеке"
+        className="replay-speed"
+        value={cat}
+        onChange={(e) => setCat(e.target.value)}
+      >
+        {(data?.categories ?? ['Контент']).map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <Button busy={save.isPending} onClick={() => save.mutate(undefined)}>
+        В библиотеку
+      </Button>
     </div>
   );
 }
