@@ -704,3 +704,28 @@ export const routeDecisions = pgTable(
   },
   (t) => [uniqueIndex('route_decisions_uq').on(t.taskId, t.fromAgent, t.fromSig)],
 );
+
+/**
+ * Agents from blocks: versions of an agent's composition (blocks + port links). Each save is a
+ * new version; rollback copies an old one as the newest. «Собрать в агента» builds the latest.
+ */
+export const agentCompositions = pgTable(
+  'agent_compositions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    brandId: uuid('brand_id')
+      .notNull()
+      .references(() => brands.id),
+    agentId: text('agent_id').notNull(),
+    version: integer('version').notNull(),
+    blocks: jsonb('blocks').notNull(),
+    links: jsonb('links').notNull(),
+    /** "сохранено", "откат к v2", "из шаблона «SEO»". */
+    note: text('note').notNull().default(''),
+    /** Set when this version was built into the agent («Собрать в агента»). */
+    builtAt: timestamp('built_at', { withTimezone: true }),
+    createdBy: text('created_by').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('agent_compositions_uq').on(t.brandId, t.agentId, t.version)],
+);
