@@ -2,52 +2,63 @@
  * The agent graph on the workspace board. A link A -> B means: A's result goes to B's input
  * and B runs after A. Pure functions only (validation, execution order, layout), shared by
  * the workflow, the panel API and tests.
+ *
+ * There are no built-in agents: every agent is the owner's record with a team role. The
+ * engine finds agents by role (planner, reviewer, acceptor) and by links, never by id.
  */
 
 export const BRIEF = 'brief';
 export const OWNER = 'me';
-export const PLANNER = 'ceo';
-export const COPYWRITER = 'copywriter';
-export const CRITIC = 'critic';
 
-export type NodeKind = 'human' | 'code' | 'constructor' | 'tool';
-export type NodeStatus = 'active' | 'draft' | 'planned';
+/** human: «Бриф» and «Вы» (entry and exit, not agents); custom: every agent. */
+export type NodeKind = 'human' | 'custom';
+export type NodeStatus = 'active' | 'draft';
+
+/** What the engine uses an agent for. One role per agent. */
+export const TEAM_ROLES = ['planner', 'reviewer', 'worker', 'acceptor'] as const;
+export type TeamRole = (typeof TEAM_ROLES)[number];
+export const TEAM_ROLE_LABEL: Record<TeamRole, string> = {
+  planner: 'Планировщик',
+  reviewer: 'Проверяющий',
+  worker: 'Исполнитель',
+  acceptor: 'Приёмка',
+};
 
 export interface GraphNode {
   id: string;
   name: string;
   kind: NodeKind;
   status: NodeStatus;
+  teamRole?: TeamRole | null;
+  /** Code behaviour of the agent (copywriting, stt_voice, ...); null: an LLM agent by fields. */
+  capability?: string | null;
 }
 
 export interface GraphLink {
   from: string;
   to: string;
-  kind: 'system' | 'user';
 }
 
-/** The working pipeline. These links cannot be deleted: without them the scenario breaks. */
-export const SYSTEM_LINKS: readonly (readonly [string, string])[] = [
-  [BRIEF, PLANNER],
-  [PLANNER, COPYWRITER],
-  [COPYWRITER, CRITIC],
-  [CRITIC, OWNER],
-];
-
-export const isSystemLink = (from: string, to: string) =>
-  SYSTEM_LINKS.some(([f, t]) => f === from && t === to);
-
 /**
- * Tool nodes that start from a file, not from the brief: their links bring the task's
- * transcript to the linked agents. Allowed targets are fixed (spec of stage 2.7).
+ * Capabilities that start from a file, not from the brief: links of such an agent bring the
+ * task's transcript to the linked agents.
  */
-export const SOURCE_TOOLS = ['stt_voice', 'video_transcribe'] as const;
-export const SOURCE_TARGETS: Record<string, readonly string[]> = {
-  stt_voice: ['reels', 'kp', 'copywriter', 'seo'],
-  video_transcribe: ['video_summary', 'reels', 'copywriter', 'seo'],
-};
-/** Tools that are never linked: they run from their own page after a human decision. */
-export const UNLINKABLE_TOOLS = ['mailer_send'] as const;
+export const SOURCE_CAPABILITIES = ['stt_voice', 'video_transcribe'] as const;
+/** Capabilities that are never linked: they run from their own page after a human decision. */
+export const UNLINKABLE_CAPABILITIES = ['mailer_send'] as const;
+/** Capabilities without an LLM (code tools): no prompt, no output fields. */
+export const TOOL_CAPABILITIES = [
+  'stt_voice',
+  'video_transcribe',
+  'kp_render',
+  'mailer_send',
+] as const;
+
+const isSource = (n: GraphNode | undefined) =>
+  !!n?.capability && (SOURCE_CAPABILITIES as readonly string[]).includes(n.capability);
+const isUnlinkable = (n: GraphNode | undefined) =>
+  !!n?.capability && (UNLINKABLE_CAPABILITIES as readonly string[]).includes(n.capability);
+const isAgent = (n: GraphNode | undefined): n is GraphNode => !!n && n.kind !== 'human';
 
 /** Color tokens for agents, assigned round-robin and stored in the registry. */
 export const AGENT_COLORS = [
@@ -86,26 +97,16 @@ export function validateLink(
   if (from === to) return 'Нельзя связать агента с самим собой';
   if (to === BRIEF) return 'В «Бриф» связи не входят: это начало задачи';
   if (from === OWNER) return '«Вы» — последний шаг: дальше результат идёт только на экспорт';
-  if (from === BRIEF && to !== PLANNER) return 'Бриф передаётся только CEO: сначала нужен план';
-  if (to === PLANNER) return 'CEO получает только бриф';
-  if (
-    (UNLINKABLE_TOOLS as readonly string[]).includes(from) ||
-    (UNLINKABLE_TOOLS as readonly string[]).includes(to)
-  )
+  if (from === BRIEF && b.teamRole !== 'planner')
+    return '«Бриф» передаётся только планировщику (агенту с ролью «Планировщик»): сначала нужен план';
+  if (b.teamRole === 'planner' && from !== BRIEF) return 'Планировщик получает только бриф';
+  if (isUnlinkable(a) || isUnlinkable(b))
     return 'Отправка писем не связывается с агентами: она запускается со страницы «Рассылка» после вашего подтверждения';
-  if ((SOURCE_TOOLS as readonly string[]).includes(to))
+  if (isSource(b))
     return 'Расшифровка начинается с файла (голосовое или видео), в неё связи не входят';
-  if ((SOURCE_TOOLS as readonly string[]).includes(from) && !SOURCE_TARGETS[from]!.includes(to))
-    return `Расшифровку можно передать только агентам: ${SOURCE_TARGETS[from]!.join(', ')}`;
   if (links.some((l) => l.from === from && l.to === to)) return 'Такая связь уже есть';
   if (hasPath(links, to, from)) return 'Получится цикл: агенты будут ждать друг друга бесконечно';
   return null;
-}
-
-export function deleteLinkProblem(link: Pick<GraphLink, 'from' | 'to' | 'kind'>): string | null {
-  return link.kind === 'system' || isSystemLink(link.from, link.to)
-    ? 'Это связь основного конвейера (Бриф → CEO → Копирайтер → Critic → Вы), её удалить нельзя'
-    : null;
 }
 
 export interface PipelineStep {
@@ -113,39 +114,88 @@ export interface PipelineStep {
   name: string;
   /** Steps whose results this step receives and waits for. */
   after: string[];
-  /** The step's result is checked by the Critic (link step -> Critic) before going further. */
+  /** The step's result is checked by a reviewer (link step -> reviewer) before going further. */
   reviewed: boolean;
-  /** Source tools linked to this step (stt_voice, video_transcribe): it gets their transcripts. */
+  /** Which reviewer checks it (plans made before stage 7 have only `reviewed`). */
+  reviewer?: string | null;
+  /** Source agents linked to this step (voice/video -> text): it gets their transcripts. */
   inputs?: string[];
+  /** The agent's capability when the plan was made (plans before stage 7 do not have it). */
+  capability?: string | null;
 }
 
 /** Snapshot stored in the plan: what will run, in which order, and what is switched off. */
 export interface Pipeline {
+  /** 2: stage 7 (roles); absent: older plans. */
+  version?: number;
+  /** The planner that made the plan. */
+  planner?: string;
   steps: PipelineStep[];
-  /** Linked but not running yet (planned / draft agent), with the reason. */
+  /** Linked but not running yet (draft agent), with the reason. */
   inactive: { agent: string; name: string; reason: string }[];
   links: { from: string; to: string }[];
+  /** Source agents (voice/video -> text) by capability. */
+  sources?: { agent: string; capability: string }[];
+  /** Things the owner should decide (e.g. two reviewers on one step): shown with the plan. */
+  warnings?: string[];
+}
+
+/** Which planner takes a new task: the one linked from «Бриф», or the only active one. */
+export function choosePlanner(
+  nodes: GraphNode[],
+  links: Pick<GraphLink, 'from' | 'to'>[],
+): { id: string; problem?: undefined } | { id?: undefined; problem: string } {
+  const planners = nodes.filter((n) => isAgent(n) && n.teamRole === 'planner');
+  const active = planners.filter((n) => n.status === 'active');
+  const names = (xs: GraphNode[]) => xs.map((n) => `«${n.name}»`).join(', ');
+  const linked = active.filter((n) => links.some((l) => l.from === BRIEF && l.to === n.id));
+  if (linked.length === 1) return { id: linked[0]!.id };
+  if (linked.length > 1)
+    return {
+      problem: `С «Бриф» связаны несколько планировщиков (${names(linked)}). Оставьте одну связь: кто планирует, решаете вы.`,
+    };
+  if (active.length === 1) return { id: active[0]!.id };
+  if (active.length > 1)
+    return {
+      problem: `Планировщиков несколько (${names(active)}). Свяжите «Бриф» с тем, кто должен планировать.`,
+    };
+  if (planners.length)
+    return {
+      problem: `Планировщик ${names(planners)} не включён: проверьте его тестом и включите.`,
+    };
+  return {
+    problem:
+      'Нет планировщика: создайте агента с ролью «Планировщик» или добавьте его из библиотеки.',
+  };
 }
 
 /**
- * Execution order for one task. Work steps are the active agents reachable from CEO; the
- * Critic is a reviewer, not a step: "A -> Critic -> B" means B gets A's result after review.
- * An inactive node blocks the path through it (its links start working once it is active).
+ * Execution order for one task. Work steps are the active agents reachable from the planner;
+ * a reviewer is not a step: "A -> Reviewer -> B" means B gets A's result after review. An
+ * inactive node blocks the path through it (its links start working once it is active).
  */
 export function buildPipeline(
   nodes: GraphNode[],
   links: GraphLink[],
-  /** Source tools that have an attachment in this task (their links start working). */
-  sources: readonly string[] = [],
+  /** Capabilities of the task's attachments (voice/video): their source agents' links work. */
+  sourceCapabilities: readonly string[] = [],
+  plannerId?: string,
 ): Pipeline {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const active = (id: string) => {
     const n = byId.get(id);
-    return !!n && n.kind !== 'human' && n.status === 'active';
+    return isAgent(n) && n.status === 'active';
   };
-  const liveSources = sources.filter((x) => active(x));
+  const planner = plannerId ?? choosePlanner(nodes, links).id;
+  const warnings: string[] = [];
+  const liveSources = nodes.filter(
+    (n) => active(n.id) && isSource(n) && sourceCapabilities.includes(n.capability!),
+  );
+  const reviewers = new Set(
+    nodes.filter((n) => active(n.id) && n.teamRole === 'reviewer').map((n) => n.id),
+  );
   const reach = new Set<string>();
-  const stack = [PLANNER, ...liveSources];
+  const stack = [...(planner ? [planner] : []), ...liveSources.map((n) => n.id)];
   while (stack.length) {
     const n = stack.pop()!;
     for (const l of links) {
@@ -154,20 +204,30 @@ export function buildPipeline(
       stack.push(l.to);
     }
   }
-  reach.delete(PLANNER);
-  reach.delete(CRITIC);
-  // Source tools are not steps: their output is the task's attachment, already there.
-  for (const src of [...SOURCE_TOOLS, ...liveSources]) reach.delete(src);
+  if (planner) reach.delete(planner);
+  for (const r of reviewers) reach.delete(r);
+  // Source agents are not steps: their output is the task's attachment, already there.
+  for (const n of nodes) if (isSource(n)) reach.delete(n.id);
   const work = nodes.filter((n) => reach.has(n.id)).map((n) => n.id);
   const has = (f: string, t: string) => links.some((l) => l.from === f && l.to === t);
-  const criticOn = active(CRITIC);
+  const reviewerOf = new Map<string, string | null>();
+  for (const w of work) {
+    const rs = [...reviewers].filter((r) => has(w, r));
+    if (rs.length > 1)
+      warnings.push(
+        `У шага «${byId.get(w)!.name}» несколько проверяющих (${rs.map((r) => `«${byId.get(r)!.name}»`).join(', ')}): шаг пойдёт без проверки, пока вы не оставите одну связь.`,
+      );
+    reviewerOf.set(w, rs.length === 1 ? rs[0]! : null);
+  }
   const deps = new Map(
     work.map((b) => [
       b,
-      work.filter((a) => a !== b && (has(a, b) || (criticOn && has(a, CRITIC) && has(CRITIC, b)))),
+      work.filter(
+        (a) => a !== b && (has(a, b) || [...reviewers].some((r) => has(a, r) && has(r, b))),
+      ),
     ]),
   );
-  // Topological order, stable by registry order.
+  // Topological order, stable by board order.
   const order: string[] = [];
   const left = new Set(work);
   while (left.size) {
@@ -181,36 +241,31 @@ export function buildPipeline(
   const inactive = nodes
     .filter(
       (n) =>
-        n.kind !== 'human' &&
-        n.status !== 'active' &&
-        links.some((l) => l.from === n.id || l.to === n.id),
+        isAgent(n) && n.status !== 'active' && links.some((l) => l.from === n.id || l.to === n.id),
     )
-    .map((n) => ({
-      agent: n.id,
-      name: n.name,
-      reason: n.status === 'planned' ? 'агент ещё не создан' : 'агент в черновике',
-    }));
+    .map((n) => ({ agent: n.id, name: n.name, reason: 'агент в черновике' }));
   return {
-    steps: order.map((agent) => ({
-      agent,
-      name: byId.get(agent)!.name,
-      after: deps.get(agent)!,
-      reviewed: criticOn && has(agent, CRITIC),
-      ...(liveSources.some((src) => has(src, agent))
-        ? { inputs: liveSources.filter((src) => has(src, agent)) }
-        : {}),
-    })),
+    version: 2,
+    ...(planner ? { planner } : {}),
+    steps: order.map((agent) => {
+      const reviewer = reviewerOf.get(agent) ?? null;
+      const inputs = liveSources.filter((src) => has(src.id, agent)).map((src) => src.id);
+      return {
+        agent,
+        name: byId.get(agent)!.name,
+        after: deps.get(agent)!,
+        reviewed: reviewer !== null,
+        reviewer,
+        capability: byId.get(agent)!.capability ?? null,
+        ...(inputs.length ? { inputs } : {}),
+      };
+    }),
     inactive,
     links: links.map((l) => ({ from: l.from, to: l.to })),
+    sources: liveSources.map((n) => ({ agent: n.id, capability: n.capability! })),
+    warnings,
   };
 }
-
-/** The pipeline of tasks planned before the board existed: copywriter + critic only. */
-export const DEFAULT_PIPELINE: Pipeline = {
-  steps: [{ agent: COPYWRITER, name: 'Копирайтер', after: [], reviewed: true }],
-  inactive: [],
-  links: SYSTEM_LINKS.map(([from, to]) => ({ from, to })),
-};
 
 /** Is a link working right now (both ends active, or a human node)? */
 export function linkActive(nodes: GraphNode[], link: Pick<GraphLink, 'from' | 'to'>): boolean {
@@ -232,11 +287,11 @@ const SPARE_PER_ROW = 6;
 /**
  * Layered layout, left to right, without overlaps: Бриф → CEO → workers → Critic → SEO → Вы.
  * Column = longest path (sources without inputs start next to Бриф); "Вы" is always last.
- * Cards without links go below the flow, each group from a new row: agents, then tools, then
- * planned agents.
+ * Cards without links go below the flow, each group from a new row: agents, then tool agents,
+ * then drafts.
  */
 export function autoLayout(
-  nodes: (Pick<GraphNode, 'id'> & Partial<Pick<GraphNode, 'kind' | 'status'>>)[],
+  nodes: (Pick<GraphNode, 'id'> & Partial<Pick<GraphNode, 'kind' | 'status' | 'capability'>>)[],
   links: Pick<GraphLink, 'from' | 'to'>[],
 ): Record<string, { x: number; y: number }> {
   const ids = new Set(nodes.map((n) => n.id));
@@ -276,10 +331,12 @@ export function autoLayout(
     });
   }
   const spare = nodes.filter((n) => !linked.has(n.id));
+  const tool = (n: (typeof spare)[number]) =>
+    !!n.capability && (TOOL_CAPABILITIES as readonly string[]).includes(n.capability);
   const groups = [
-    spare.filter((n) => n.kind !== 'tool' && n.status !== 'planned'),
-    spare.filter((n) => n.kind === 'tool'),
-    spare.filter((n) => n.kind !== 'tool' && n.status === 'planned'),
+    spare.filter((n) => !tool(n) && n.status !== 'draft'),
+    spare.filter((n) => tool(n)),
+    spare.filter((n) => !tool(n) && n.status === 'draft'),
   ];
   let row = 0;
   const top = tallest * stepY + GAP_Y;

@@ -6,7 +6,12 @@ import {
   type Composition,
 } from './blocks.js';
 
-const opts = { allowedModels: ['claude-sonnet-5-5'], nodes: ['seo', 'kp_render', 'me', 'critic'] };
+const opts = {
+  allowedModels: ['claude-sonnet-5-5'],
+  nodes: ['seo', 'me', 'rev'],
+  capabilities: ['kp_render', 'image_generate'],
+  reviewer: 'rev',
+};
 
 function full(): Composition {
   const c = defaultComposition('Ты — SEO-редактор: подбираешь ключевые слова к постам кофейни.');
@@ -52,7 +57,8 @@ describe('agents from blocks', () => {
     expect(r.agent.prompt).toMatch(/## Словарь\nраф, флэт уайт/);
     expect(r.agent.fields.map((f) => f.key)).toEqual(['keywords']);
     expect(r.agent.criteria).toEqual(['не больше 10 ключей']);
-    expect(r.agent.links).toEqual(['critic', 'seo', 'me']);
+    expect(r.agent.links).toEqual(['rev', 'seo', 'me']);
+    expect(r.agent.capability).toBeNull();
     expect(r.agent.modelRole).toBe('worker');
   });
 

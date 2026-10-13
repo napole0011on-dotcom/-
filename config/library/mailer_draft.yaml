@@ -1,0 +1,51 @@
+slug: mailer_draft
+version: 1
+category: Продажи
+name: Письмо
+role: черновик email-рассылки
+description: Тема, прехедер, текст и HTML письма, короткий вариант. Отправка — отдельно, со страницы «Рассылка».
+team_role: worker
+model_role: worker
+prompt_file: prompts/mailer_draft.md
+fields:
+  - key: subject
+    label: Тема
+    type: text
+    required: true
+    hint: до 60 символов
+  - key: preheader
+    label: Прехедер
+    type: text
+    required: true
+    hint: до 90 символов
+  - key: body_text
+    label: Текст
+    type: long_text
+    required: true
+    hint: ""
+  - key: body_html
+    label: HTML
+    type: long_text
+    required: true
+    hint: ""
+  - key: short_version
+    label: Короткий вариант
+    type: long_text
+    required: true
+    hint: ""
+  - key: merge_fields_used
+    label: Поля подстановки
+    type: list
+    required: false
+    hint: ""
+  - key: spam_risk_notes
+    label: Риски спама
+    type: list
+    required: false
+    hint: ""
+criteria:
+  - "нет спам-триггеров: капслок, «БЕСПЛАТНО», много «!»"
+  - в тексте и HTML есть ссылка отписки {{unsubscribe_url}}
+  - используются только поля {{name}} и {{unsubscribe_url}}
+  - тема не длиннее 60 символов
+  - нет обещаний вне фактов брифа

@@ -4,7 +4,10 @@ import { findRepoRoot } from '@cms/core';
 import { loadBrandProfileFile } from './brand.js';
 import { estimatePlan } from './estimate.js';
 import { findPhrases, phraseRegex } from './lint.js';
+import { LIBRARY_DIR } from './library.js';
 import { loadClicheList, loadPrompt, parsePrompt } from './prompts.js';
+
+const LIBRARY_PROMPTS = path.join(LIBRARY_DIR, 'prompts');
 import { CeoPlan, copywriterOutputSchema, formatProblems, type CopyItem } from './schemas.js';
 import { loadPricing } from '@cms/core';
 
@@ -111,8 +114,9 @@ describe('prompts and brand profile', () => {
     expect(a.version).toMatch(/^ceo@3#[0-9a-f]{8}$/);
     expect(b.version).not.toBe(a.version);
     expect(() => parsePrompt('ceo', 'no front matter')).toThrow(/version/);
-    for (const agent of ['ceo', 'copywriter', 'critic'] as const)
-      expect(loadPrompt(agent).version).toMatch(new RegExp(`^${agent}@\\d+#`));
+    // Prompt files of the starting templates (config/library/prompts) keep the front matter.
+    for (const name of ['planner', 'copywriter', 'reviewer'] as const)
+      expect(loadPrompt(name, LIBRARY_PROMPTS).version).toMatch(new RegExp(`^${name}@\\d+#`));
   });
 
   it('default brand profile loads and validates', () => {

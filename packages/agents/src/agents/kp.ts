@@ -10,7 +10,14 @@ import {
   type KpLine,
   type KpTotals,
 } from '../tools/catalog.js';
-import { json, type AgentContext, type AgentResult } from './context.js';
+import {
+  json,
+  selfModel,
+  selfPrompt,
+  type AgentContext,
+  type AgentResult,
+  type AgentSelf,
+} from './context.js';
 
 /** What the model returns: text and catalog ids. No prices, no sums. */
 export const KpDraft = z
@@ -58,10 +65,15 @@ const CRITERIA = [
 ];
 
 /** Agent «КП»: text by the model, prices and totals from the catalog by code. */
-export function kpExecutor(d: { catalogFile: string; vatPercent: number }): NodeExecutor {
+export function kpExecutor(d: {
+  catalogFile: string;
+  vatPercent: number;
+  /** The agent record that has the capability (its prompt, model and cost line). */
+  self: AgentSelf;
+}): NodeExecutor {
   return {
     async run(ctx: AgentContext, input: NodeInput): Promise<AgentResult<KpOutput>> {
-      const prompt = ctx.prompts.kp;
+      const prompt = selfPrompt(ctx, d.self);
       const catalog = loadCatalog(d.catalogFile);
       const parts = [
         `Бриф клиента:\n${wrapExternalData('brief', input.brief)}`,
@@ -88,10 +100,10 @@ export function kpExecutor(d: { catalogFile: string; vatPercent: number }): Node
           brandId: ctx.brand.id,
           taskId: ctx.taskId,
           runId: ctx.runId,
-          agent: 'kp',
+          agent: d.self.id,
           promptVersion: prompt.version,
         },
-        model: ctx.models.worker,
+        model: selfModel(ctx, d.self, 'worker'),
         system: [
           { text: prompt.text, cache: true },
           { text: renderBrandForPrompt(ctx.brand), cache: true },
@@ -130,13 +142,14 @@ export function kpExecutor(d: { catalogFile: string; vatPercent: number }): Node
     render(output: unknown): NodeRender {
       return renderKp(output as KpOutput);
     },
-    review(ctx, input, output) {
+    review(ctx, input, output, reviewer) {
       const o = output as KpOutput;
       return genericReview(
         ctx,
+        reviewer,
         input,
         { draft: o.draft, lines: o.lines, totals: o.totals, warnings: o.warnings },
-        { id: 'kp', name: 'КП', role: 'коммерческое предложение', criteria: CRITERIA },
+        { ...d.self, role: 'коммерческое предложение', criteria: CRITERIA },
       );
     },
   };

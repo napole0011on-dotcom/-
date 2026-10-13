@@ -1,0 +1,9 @@
+# Tool (no LLM): video -> text and subtitles (SRT/VTT).
+slug: video_transcribe
+version: 1
+category: Инструменты
+name: Видео → текст
+role: расшифровка и субтитры
+description: Расшифровывает видео и делает субтитры SRT/VTT. Связи от него решают, кому идёт расшифровка.
+team_role: worker
+capability: video_transcribe

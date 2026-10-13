@@ -1,15 +1,10 @@
 import type { Actor } from '@cms/core';
 import { schema, sql, type Db, type DbOrTx } from '@cms/db';
 import {
-  AGENT_NAMES,
-  PROMPTS_DIR,
-  loadPrompt,
   normalizePromptText,
   promptHash,
   promptLabel,
   validatePromptText,
-  isCodePromptAgent,
-  type AgentName,
   type LoadedPrompt,
   type PromptMap,
 } from './prompts.js';
@@ -21,8 +16,6 @@ export type PromptVersion = typeof promptVersions.$inferSelect;
 export interface ActivePrompt extends LoadedPrompt {
   id: string;
 }
-
-const FILE_ACTOR = 'system:prompt-files';
 
 export const labelOf = (v: Pick<PromptVersion, 'agent' | 'version' | 'hash'>) =>
   promptLabel(v.agent, v.version, v.hash);
@@ -81,69 +74,21 @@ async function activeVersion(db: DbOrTx, brandId: string, agent: string) {
   return row?.v ?? null;
 }
 
-/**
- * Called at start (bot and API) and lazily before the first run. For each agent:
- *  - no versions yet -> the file becomes version 1 and is activated;
- *  - the file text is new -> it is added as a version from the file but NOT activated
- *    (the panel shows "есть новая версия из файла");
- *  - otherwise nothing changes.
- */
-export async function syncPromptFiles(
-  db: Db,
-  brandId: string,
-  dir: string = PROMPTS_DIR,
-): Promise<{ agent: AgentName; label: string; activated: boolean }[]> {
-  const out: { agent: AgentName; label: string; activated: boolean }[] = [];
-  for (const agent of AGENT_NAMES) {
-    const file = loadPrompt(agent, dir);
-    const fileVersion = Number(/@(\d+)#/.exec(file.version)?.[1] ?? 0) || null;
-    const r = await db.transaction(async (tx) => {
-      await lock(tx, brandId, agent);
-      await ensureSettingsRow(tx, brandId, agent);
-      const { row, created } = await insertVersion(tx, {
-        brandId,
-        agent,
-        text: file.text,
-        source: 'file',
-        fileVersion,
-        createdBy: FILE_ACTOR,
-      });
-      const active = await activeVersion(tx, brandId, agent);
-      if (!active) {
-        await tx
-          .update(agentSettings)
-          .set({ activePromptId: row.id, updatedBy: FILE_ACTOR, updatedAt: sql`now()` })
-          .where(sql`${agentSettings.brandId} = ${brandId} and ${agentSettings.agent} = ${agent}`);
-      }
-      return { created, activated: !active, label: labelOf(row) };
-    });
-    if (r.created || r.activated) out.push({ agent, label: r.label, activated: r.activated });
-  }
-  return out;
-}
-
-/** The prompt agents run with: the active DB version (seeded from the file on first use). */
+/** The prompt an agent runs with: its active DB version. */
 export async function activePrompt(db: Db, brandId: string, agent: string): Promise<ActivePrompt> {
-  let v = await activeVersion(db, brandId, agent);
-  if (!v && isCodePromptAgent(agent)) {
-    await syncPromptFiles(db, brandId);
-    v = await activeVersion(db, brandId, agent);
-  }
+  const v = await activeVersion(db, brandId, agent);
   if (!v) throw new Error(`No active prompt for ${agent}`);
   return toLoaded(v);
 }
 
-/** Code agents' prompts plus the active prompts of `extra` registry agents (those that have one). */
+/** Active prompts of these agents (those that have one). */
 export async function activePrompts(
   db: Db,
   brandId: string,
-  extra: readonly string[] = [],
+  agents: readonly string[] = [],
 ): Promise<PromptMap> {
-  const entries = await Promise.all(
-    AGENT_NAMES.map(async (a) => [a, await activePrompt(db, brandId, a)] as const),
-  );
-  const out: PromptMap = Object.fromEntries(entries) as Record<AgentName, ActivePrompt>;
-  for (const a of extra) {
+  const out: PromptMap = {};
+  for (const a of agents) {
     if (out[a]) continue;
     const v = await activeVersion(db, brandId, a);
     if (v) out[a] = toLoaded(v);
@@ -170,9 +115,7 @@ export interface PromptVersionView {
 
 /** All versions, newest first, plus the file version that is newer than the active one (if any). */
 export async function promptHistory(db: Db, brandId: string, agent: string) {
-  const active = isCodePromptAgent(agent)
-    ? await activePrompt(db, brandId, agent)
-    : await activeVersion(db, brandId, agent);
+  const active = await activeVersion(db, brandId, agent);
   const rows = await db
     .select()
     .from(promptVersions)

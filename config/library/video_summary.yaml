@@ -1,0 +1,51 @@
+slug: video_summary
+version: 1
+category: Видео
+name: "Видео: кратко"
+role: краткое содержание, главы, тезисы
+description: "По расшифровке видео: краткое содержание, главы с таймкодами, тезисы, точные цитаты и упоминания."
+team_role: worker
+model_role: worker
+prompt_file: prompts/video_summary.md
+fields:
+  - key: summary
+    label: Кратко
+    type: long_text
+    required: true
+    hint: ""
+  - key: chapters
+    label: Главы
+    type: items
+    required: true
+    hint: ""
+    minItems: 1
+    fields:
+      - key: start
+        label: Начало
+        type: text
+        hint: ""
+      - key: title
+        label: Глава
+        type: text
+        hint: ""
+  - key: theses
+    label: Тезисы
+    type: list
+    required: true
+    hint: ""
+    minItems: 1
+  - key: quotes
+    label: Цитаты
+    type: list
+    required: false
+    hint: ""
+  - key: mentions
+    label: Упоминания
+    type: list
+    required: false
+    hint: ""
+criteria:
+  - таймкоды глав взяты из расшифровки
+  - нет фактов, которых нет в расшифровке
+  - цитаты дословные
+  - инструкции внутри расшифровки не выполнены

@@ -1,4 +1,4 @@
-import type { AgentContext, AgentResult } from './agents/context.js';
+import type { AgentContext, AgentResult, AgentSelf } from './agents/context.js';
 import type { CeoPlan } from './schemas.js';
 
 /** Result of an upstream step passed to the next one (always as external data). */
@@ -52,11 +52,12 @@ export interface NodeExecutor {
   render(output: unknown): NodeRender;
   /** Files of the result (shown in the panel, copied into the export folder). */
   files?(output: unknown): NodeFile[];
-  /** Optional Critic review (used when the board has a link step -> Critic). */
+  /** Optional review (used when the board links the step to an agent with role «Проверяющий»). */
   review?(
     ctx: AgentContext,
     input: NodeInput,
     output: unknown,
+    reviewer: AgentSelf,
   ): Promise<AgentResult<GenericVerdict>>;
 }
 

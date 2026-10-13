@@ -11,6 +11,7 @@ import {
 } from '@cms/engine/testkit';
 import {
   activateConstructorAgent,
+  agentNames,
   createConstructorAgent,
   deactivateConstructorAgent,
   deleteConstructorAgent,
@@ -20,7 +21,7 @@ import {
 import { runAgentTest } from './agent-test.js';
 import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow } from './workflow.js';
 import { addLink, loadWorkspace } from './workspace.js';
 
@@ -45,6 +46,7 @@ describe('agent constructor (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: `c-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -119,7 +121,8 @@ describe('agent constructor (Postgres)', () => {
     expect(created.ok, created.message).toBe(true);
     const ws = await loadWorkspace(t.db, s.brand.id);
     expect(ws.nodes.find((n) => n.id === 'hashtags')).toMatchObject({
-      kind: 'constructor',
+      kind: 'custom',
+      teamRole: 'worker',
       status: 'draft',
     });
     expect(ws.layout.hashtags).toBeDefined();
@@ -203,7 +206,7 @@ describe('agent constructor (Postgres)', () => {
 
     // In use by a task in progress -> cannot be deleted; after cancel it can.
     expect((await deleteConstructorAgent(t.db, s.brand.id, 'hashtags', OWNER)).message).toMatch(
-      /незавершённых/,
+      /незавершённой задачи/,
     );
     await s.wf.cancelTask(taskId, OWNER);
     const del = await deleteConstructorAgent(t.db, s.brand.id, 'hashtags', OWNER);
@@ -216,11 +219,26 @@ describe('agent constructor (Postgres)', () => {
       expect((await s.audit(a)).length, a).toBeGreaterThan(0);
   });
 
-  it('code agents are not edited by the constructor; names are unique; deactivate', async () => {
+  it('every agent is editable: a new role makes it a draft again; names are unique; deactivate', async () => {
     const s = await setup();
-    expect(
-      (await updateConstructorAgent(t.db, s.brand.id, 'ceo', { name: 'Шеф' }, OWNER)).message,
-    ).toMatch(/в коде/);
+    expect((await updateConstructorAgent(t.db, s.brand.id, 'ceo', { name: 'Шеф' }, OWNER)).ok).toBe(
+      true,
+    );
+    const role = await updateConstructorAgent(
+      t.db,
+      s.brand.id,
+      'critic',
+      { teamRole: 'worker' },
+      OWNER,
+    );
+    expect(role.message).toMatch(/снова черновик/);
+    expect(await resolveAgent(t.db, s.brand.id, 'critic')).toMatchObject({
+      teamRole: 'worker',
+      status: 'draft',
+    });
+    expect((await s.audit('agent_updated')).at(-1)!.details).toMatchObject({
+      teamRole: { from: 'reviewer', to: 'worker' },
+    });
     const dup = await createConstructorAgent(
       t.db,
       s.brand.id,
@@ -238,10 +256,77 @@ describe('agent constructor (Postgres)', () => {
     expect((await deactivateConstructorAgent(t.db, s.brand.id, 'rerayt_storis', OWNER)).ok).toBe(
       false,
     );
-    // Model override works for registry agents too (price list only).
+    // Model override works for every agent (price list only).
     const model = Object.keys(pricing().models)[0]!;
     expect((await s.wf.controls.setModel(s.brand.id, 'rerayt_storis', model, OWNER)).ok).toBe(true);
     expect((await s.wf.controls.agentModels(s.brand.id)).rerayt_storis).toBe(model);
     expect((await s.wf.controls.setPaused(s.brand.id, 'rerayt_storis', true, OWNER)).ok).toBe(true);
+  });
+
+  it('delete: any agent (active too), refused only while an unfinished task has it in its plan', async () => {
+    const s = await setup();
+    const { taskId } = await s.wf.submitBrief(s.brand.id, 'Пост про осеннее меню кофейни', OWNER);
+    await s.drain();
+    // In the plan of an unfinished task: the writer (a step), its reviewer and the planner.
+    for (const id of ['copywriter', 'critic', 'ceo']) {
+      const r = await deleteConstructorAgent(t.db, s.brand.id, id, OWNER);
+      expect(r.ok, id).toBe(false);
+      expect(r.taskId).toBe(taskId);
+      expect(r.message).toMatch(/незавершённой задачи «Пост про осеннее меню кофейни»/);
+    }
+    // Tools, capability agents and drafts go at once (active ones too: the panel confirms).
+    for (const id of ['kp_render', 'image', 'seo', 'stt_voice', 'mailer_send']) {
+      const r = await deleteConstructorAgent(t.db, s.brand.id, id, OWNER);
+      expect(r.ok, `${id}: ${r.message}`).toBe(true);
+      expect(r.message).toMatch(/^Удалён агент «/);
+    }
+    await s.wf.cancelTask(taskId, OWNER);
+    const last = await deleteConstructorAgent(t.db, s.brand.id, 'ceo', OWNER);
+    expect(last.message).toMatch(/Планировщиков больше нет/);
+    expect((await deleteConstructorAgent(t.db, s.brand.id, 'copywriter', OWNER)).ok).toBe(true);
+    // Gone from the board with its links; kept for history (name, prompt versions, audit).
+    const ws = await loadWorkspace(t.db, s.brand.id);
+    expect(ws.nodes.map((n) => n.id)).not.toContain('ceo');
+    expect(ws.links.some((l) => l.from === 'ceo' || l.to === 'ceo')).toBe(false);
+    expect((await agentNames(t.db, s.brand.id)).ceo).toBe('Планировщик');
+    const prompts = await t.db
+      .select()
+      .from(schema.promptVersions)
+      .where(
+        sql`${schema.promptVersions.brandId} = ${s.brand.id} and ${schema.promptVersions.agent} = 'ceo'`,
+      );
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(
+      (await s.audit('agent_deleted')).find(
+        (a) => (a.details as { agent: string }).agent === 'ceo',
+      )!.details,
+    ).toMatchObject({
+      before: { name: 'Планировщик', teamRole: 'planner', status: 'active' },
+      after: null,
+    });
+    // The same name again: a new agent with a new id.
+    const again = await createConstructorAgent(
+      t.db,
+      s.brand.id,
+      {
+        name: 'Планировщик',
+        role: 'планирует',
+        description: '',
+        modelRole: 'ceo',
+        teamRole: 'planner',
+      },
+      OWNER,
+    );
+    expect(again.ok, again.message).toBe(true);
+    expect(again.id).not.toBe('ceo');
+    // No planner: a new task is accepted and waits, nothing fails.
+    const waiting = await s.wf.submitBrief(s.brand.id, 'Ещё один пост про десерты', OWNER);
+    expect(waiting).toMatchObject({ planned: false });
+    expect(waiting.message).toMatch(/не включён/);
+    const [row] = await t.db
+      .select()
+      .from(schema.tasks)
+      .where(sql`${schema.tasks.id} = ${waiting.taskId}`);
+    expect(row!.status).toBe('draft');
   });
 });

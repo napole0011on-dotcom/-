@@ -1,7 +1,14 @@
 import { EXTERNAL_DATA_RULES, wrapExternalData } from '@cms/engine';
 import { renderBrandForPrompt } from '../brand.js';
 import { CeoPlan } from '../schemas.js';
-import { json, type AgentContext, type AgentResult } from './context.js';
+import {
+  json,
+  selfModel,
+  selfPrompt,
+  type AgentContext,
+  type AgentResult,
+  type AgentSelf,
+} from './context.js';
 
 export interface CeoInput {
   brief: string;
@@ -14,8 +21,13 @@ export interface CeoInput {
 }
 
 /** CEO (stage 2: simplified) — turns a brief into a list of deliverables for the copywriter. */
-export async function runCeo(ctx: AgentContext, input: CeoInput): Promise<AgentResult<CeoPlan>> {
-  const prompt = ctx.prompts.ceo;
+/** Planner (role «Планировщик»): turns a brief into a list of deliverables for the team. */
+export async function runCeo(
+  ctx: AgentContext,
+  input: CeoInput,
+  self: AgentSelf,
+): Promise<AgentResult<CeoPlan>> {
+  const prompt = selfPrompt(ctx, self);
   const parts = [`Бриф владельца:\n${input.brief}`];
   if (input.team?.length) {
     parts.push(
@@ -41,10 +53,10 @@ export async function runCeo(ctx: AgentContext, input: CeoInput): Promise<AgentR
       brandId: ctx.brand.id,
       taskId: ctx.taskId,
       runId: ctx.runId,
-      agent: 'ceo',
+      agent: self.id,
       promptVersion: prompt.version,
     },
-    model: ctx.models.ceo,
+    model: selfModel(ctx, self, 'ceo'),
     system: [
       { text: prompt.text, cache: true },
       { text: renderBrandForPrompt(ctx.brand), cache: true },

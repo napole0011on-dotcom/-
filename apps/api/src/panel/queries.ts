@@ -13,6 +13,7 @@ import {
   finalDecisions,
   latestArtifacts,
   type BudgetContext,
+  workerStatus,
 } from '@cms/engine';
 import {
   CeoPlan,
@@ -27,7 +28,11 @@ import {
   getControlState,
   linkActive,
   loadWorkspace,
-  deleteLinkProblem,
+  capabilityById,
+  choosePlanner,
+  needsFields,
+  specHashOf,
+  usesLlm,
   promptHistory,
   recentEvents,
   toItemView,
@@ -65,7 +70,13 @@ const HIDDEN_KINDS = ['smoke', TEST_TASK_KIND, 'media', 'mailing'];
 /** Runs held in the queue for a paused agent / "stop everything", by task. */
 async function heldRuns(db: Db) {
   return db
-    .select({ id: runs.id, taskId: runs.taskId, input: runs.input, waitingFor: runs.waitingFor })
+    .select({
+      id: runs.id,
+      taskId: runs.taskId,
+      agent: runs.agent,
+      input: runs.input,
+      waitingFor: runs.waitingFor,
+    })
     .from(runs)
     .where(sql`${runs.status} = 'queued' and ${runs.waitingFor} is not null`);
 }
@@ -103,8 +114,13 @@ export async function llmStatus(d: QueryDeps) {
     h?.state === 'down' && h.openUntil
       ? Math.max(0, Math.ceil((h.openUntil.getTime() - Date.now()) / 1000))
       : null;
+  const worker = await workerStatus(d.db);
   return {
     provider: llm.provider,
+    // The queue worker (pnpm dev:bot): without it tasks are not run.
+    worker: { alive: worker.alive, beatAt: worker.beatAt },
+    // Why a new task would not start (no planner, several, a draft one); null: it would.
+    planning: await planningProblemOf(d),
     // Circuit breaker state written by the worker: ok | degraded | down.
     health: {
       state: llm.provider === 'mock' ? 'ok' : (h?.state ?? 'ok'),
@@ -209,7 +225,12 @@ export async function agentCards(d: QueryDeps) {
       );
 
     // The owner's gates belong to the planner (plan) and to the working pipeline (package).
-    const waiting = !def.code ? undefined : def.id === 'ceo' ? waitingPlan[0] : waitingFinal[0];
+    const waiting =
+      def.teamRole === 'planner'
+        ? waitingPlan[0]
+        : def.teamRole === 'reviewer' || def.capability === 'copywriting'
+          ? waitingFinal[0]
+          : undefined;
     const recentError =
       last?.status === 'failed' && last.startedAt.getTime() > Date.now() - 24 * 3_600_000;
     const paused = ctl.paused || controls.allPaused;
@@ -675,7 +696,7 @@ export async function spendOverview(d: QueryDeps) {
 export async function agentSettingsView(d: QueryDeps, agentId: string) {
   const brandId = d.brandId();
   const def = await d.controls.agent(brandId, agentId);
-  if (!def?.promptAgent) return null;
+  if (!def) return null;
   const controls = await getControlState(d.db, brandId);
   const ctl = controls.agents[def.id] ?? {
     paused: false,
@@ -684,20 +705,21 @@ export async function agentSettingsView(d: QueryDeps, agentId: string) {
     updatedBy: null,
   };
   const model = await d.controls.modelOf(brandId, def);
-  const prompts = await promptHistory(d.db, brandId, def.promptAgent);
-  let constructor = null;
-  if (def.kind === 'constructor') {
-    const { spec, raw } = constructorSpecOf(def);
-    const lastTest = (raw as { lastTest?: unknown }).lastTest ?? null;
-    constructor = {
-      fields: (raw as { fields?: unknown }).fields ?? [],
-      criteria: (raw as { criteria?: unknown }).criteria ?? [],
-      lastTest,
-      specHash: spec ? specHash(spec) : null,
-      activationProblems:
-        def.status === 'active' ? [] : await activationProblems(d.db, brandId, def),
-    };
-  }
+  const prompts = def.promptAgent
+    ? await promptHistory(d.db, brandId, def.promptAgent)
+    : { active: null, pendingFile: null, versions: [] };
+  // Every agent is the owner's: fields (when its output is described by them), criteria, test.
+  const { raw } = constructorSpecOf(def);
+  const constructor = {
+    fields: (raw as { fields?: unknown }).fields ?? [],
+    criteria: (raw as { criteria?: unknown }).criteria ?? [],
+    lastTest: (raw as { lastTest?: unknown }).lastTest ?? null,
+    specHash: specHashOf(def),
+    needsFields: needsFields(def),
+    usesLlm: usesLlm(def),
+    activationProblems: def.status === 'active' ? [] : await activationProblems(d.db, brandId, def),
+  };
+  const capability = capabilityById(def.capability);
   return {
     agent: {
       id: def.id,
@@ -708,6 +730,15 @@ export async function agentSettingsView(d: QueryDeps, agentId: string) {
       status: def.status,
       color: def.color,
       icon: def.icon,
+      teamRole: def.teamRole,
+      capability: capability
+        ? {
+            id: capability.id,
+            name: capability.name,
+            kind: capability.kind,
+            realNeeds: capability.realNeeds,
+          }
+        : null,
     },
     constructor,
     controls: {
@@ -745,15 +776,17 @@ export async function workspaceView(d: QueryDeps) {
       icon: n.icon,
       position: ws.layout[n.id] ?? { x: 0, y: 0 },
       card: cards.find((c) => c.id === n.id) ?? null,
-      tool: tools[n.id] ?? null,
+      teamRole: n.teamRole,
+      capability: n.capability,
+      tool: (n.capability && tools[n.capability]) || null,
     })),
     links: ws.links.map((l) => ({
       id: l.id,
       from: l.from,
       to: l.to,
-      kind: l.kind,
       active: linkActive(ws.nodes, l),
-      deletable: deleteLinkProblem(l) === null,
+      // Every link can be deleted (the DAG rules only limit new links).
+      deletable: true,
     })),
   };
 }
@@ -799,25 +832,32 @@ export async function taskPath(d: QueryDeps, taskId: string) {
     .from(artifacts)
     .where(sql`${artifacts.taskId} = ${taskId}`)
     .orderBy(sql`${artifacts.version} desc`);
+  const copyAgents = new Set(arts.filter((a) => a.slot.startsWith('copy:')).map((a) => a.agent));
+  for (const st of pipeline?.steps ?? [])
+    if (st.capability === 'copywriting') copyAgents.add(st.agent);
   const verdictOf = (agent: string): boolean | null => {
+    const copy = copyAgents.has(agent);
     const mine = arts.filter((a) =>
-      agent === 'copywriter' ? a.slot.startsWith('copy:') : a.slot === `node:${agent}:main`,
+      copy ? a.slot.startsWith('copy:') : a.slot === `node:${agent}:main`,
     );
     if (mine.length === 0) return null;
     const seen = new Set<string>();
     const latest = mine.filter((a) => !seen.has(a.slot) && seen.add(a.slot));
     const verdicts = latest.map((a) =>
-      agent === 'copywriter'
-        ? (a.content as CopyContent).critic.passed
+      copy
+        ? ((a.content as CopyContent).critic?.passed ?? null)
         : ((a.content as NodeContent).critic?.passed ?? null),
     );
     return verdicts.some((v) => v === null) ? null : verdicts.every(Boolean);
   };
+  const planner = pipeline?.planner ?? planArt?.agent ?? null;
+  const steps = pipeline?.steps ?? [];
   const stateOf = (agent: string): StepState => {
     const mine = runRows.filter((r) => {
       const i = r.input as { kind?: string; agent?: string };
-      if (agent === 'ceo') return i.kind === 'plan';
-      if (agent === 'copywriter') return i.kind === 'copy' || i.kind === 'rework';
+      if (agent === planner) return i.kind === 'plan';
+      if (copyAgents.has(agent))
+        return (i.kind === 'copy' || i.kind === 'rework') && r.agent === agent;
       return i.kind === 'node' && i.agent === agent;
     });
     if (mine.some((r) => r.status === 'running')) return 'running';
@@ -826,21 +866,56 @@ export async function taskPath(d: QueryDeps, taskId: string) {
     if (mine.some((r) => r.status === 'failed' || r.status === 'dead')) return 'failed';
     return mine.some((r) => r.status === 'succeeded') ? 'done' : 'pending';
   };
-  const agents = ['ceo', ...(pipeline?.steps.map((s2) => s2.agent) ?? ['copywriter'])];
-  const reviewed = pipeline?.steps.some((s2) => s2.reviewed) ?? true;
-  if (reviewed) agents.push('critic');
+  // Reviewers: stored per step; plans before stage 7 only say «reviewed» — then the agents that
+  // were called in the task but are neither the planner nor a step.
+  const stepIds = new Set(steps.map((x) => x.agent));
+  const reviewedBy = new Map<string, string[]>();
+  for (const st of steps) {
+    const r =
+      st.reviewer ??
+      (st.reviewed && st.reviewer === undefined
+        ? inv.map((x) => x.agent).find((a) => a !== planner && !stepIds.has(a))
+        : undefined);
+    if (r) reviewedBy.set(r, [...(reviewedBy.get(r) ?? []), st.agent]);
+  }
+  const reviewerState = (r: string): StepState => {
+    const ss = (reviewedBy.get(r) ?? []).map(stateOf);
+    return ss.includes('running')
+      ? 'running'
+      : ss.includes('waiting')
+        ? 'waiting'
+        : ss.includes('failed')
+          ? 'failed'
+          : ss.length && ss.every((x) => x === 'done')
+            ? 'done'
+            : 'pending';
+  };
+  const reviewerVerdict = (r: string): boolean | null => {
+    const vs = (reviewedBy.get(r) ?? []).map(verdictOf);
+    return vs.some((v) => v === null) ? null : vs.every(Boolean);
+  };
   return {
     taskId,
     title: t.title,
     status: t.status,
     pipeline,
-    nodes: agents.map((agent) => ({
-      agent,
-      state: agent === 'critic' ? stateOf('copywriter') : stateOf(agent),
-      verdict:
-        agent === 'critic' ? verdictOf('copywriter') : agent === 'ceo' ? null : verdictOf(agent),
-      costUsd: costOf(agent),
-    })),
+    nodes: [
+      ...(planner
+        ? [{ agent: planner, state: stateOf(planner), verdict: null, costUsd: costOf(planner) }]
+        : []),
+      ...steps.map((st) => ({
+        agent: st.agent,
+        state: stateOf(st.agent),
+        verdict: verdictOf(st.agent),
+        costUsd: costOf(st.agent),
+      })),
+      ...[...reviewedBy.keys()].map((r) => ({
+        agent: r,
+        state: reviewerState(r),
+        verdict: reviewerVerdict(r),
+        costUsd: costOf(r),
+      })),
+    ],
   };
 }
 
@@ -867,4 +942,10 @@ export async function taskRunEvents(d: QueryDeps, taskId: string) {
     costUsd: r.cost == null ? null : Number(r.cost),
     payload: r.payload,
   }));
+}
+
+/** Why new tasks would not be planned now (by roles on the board), or null. */
+export async function planningProblemOf(d: QueryDeps): Promise<string | null> {
+  const ws = await loadWorkspace(d.db, d.brandId());
+  return choosePlanner(ws.nodes, ws.links).problem ?? null;
 }

@@ -9,7 +9,13 @@ import {
   type Deliverable,
   type Review,
 } from '../schemas.js';
-import type { AgentContext, AgentResult } from './context.js';
+import {
+  selfModel,
+  selfPrompt,
+  type AgentContext,
+  type AgentResult,
+  type AgentSelf,
+} from './context.js';
 
 export interface CriticInput {
   brief: string;
@@ -53,11 +59,13 @@ export function combineVerdict(
   };
 }
 
+/** Reviewer (role «Проверяющий») of texts: checklist + deterministic phrase checks. */
 export async function runCritic(
   ctx: AgentContext,
   input: CriticInput,
+  self: AgentSelf,
 ): Promise<AgentResult<Verdict[]>> {
-  const prompt = ctx.prompts.critic;
+  const prompt = selfPrompt(ctx, self);
   const cliches = loadClicheList();
   const banned = ctx.brand.profile.bannedWords;
   const ids = input.items.map((i) => i.deliverableId);
@@ -66,10 +74,10 @@ export async function runCritic(
       brandId: ctx.brand.id,
       taskId: ctx.taskId,
       runId: ctx.runId,
-      agent: 'critic',
+      agent: self.id,
       promptVersion: prompt.version,
     },
-    model: ctx.models.critic,
+    model: selfModel(ctx, self, 'critic'),
     system: [
       {
         text: `${prompt.text}\n\nЗапрещённые обороты:\n${[...cliches, ...banned].join('\n')}\n\n${EXTERNAL_DATA_RULES}`,

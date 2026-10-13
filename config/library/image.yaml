@@ -1,0 +1,10 @@
+slug: image
+version: 1
+category: Контент
+name: Image
+role: картинки к постам через Magnific
+description: Пишет задания для генератора по плану и текстам, генерирует картинки (сейчас — mock Magnific) и кладёт их в хранилище.
+team_role: worker
+capability: image_generate
+model_role: worker
+prompt_file: prompts/image.md

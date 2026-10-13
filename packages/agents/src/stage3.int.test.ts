@@ -15,10 +15,9 @@ import {
 import { LocalFsStorage, MockImageProvider } from '@cms/providers';
 import { resolveAgent } from './agent-registry.js';
 import { BrandProfile, upsertBrand } from './brand.js';
-import { codeExecutors } from './executors.js';
+import { capabilityExecutors } from './executors.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { installPresets } from './presets.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam, addTemplatesForTest } from './testing.js';
 import { Workflow } from './workflow.js';
 import { addLink, loadWorkspace } from './workspace.js';
 
@@ -41,6 +40,7 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
       t.db,
       BrandProfile.parse({ slug: 'stage3', name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -71,7 +71,7 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
       pricing: pricing(),
       logger: silentLogger,
       storage,
-      executors: codeExecutors({ db: t.db, config, image, storage }),
+      capabilities: capabilityExecutors({ db: t.db, config, image, storage }),
     });
     const deps = {
       db: t.db,
@@ -87,19 +87,21 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
 
     const ws = await loadWorkspace(t.db, brand.id);
     expect(ws.nodes.find((n) => n.id === 'image')).toMatchObject({
-      kind: 'code',
+      kind: 'custom',
+      capability: 'image_generate',
       status: 'active',
     });
     const testDeps = { db: t.db, config, controls: wf.controls, logger: silentLogger };
-    // The bot and the API start at the same time: both install, neither crashes, each preset once.
-    const [a, b] = await Promise.all([
-      installPresets(testDeps, brand.id),
-      installPresets(testDeps, brand.id),
+    // Agents from the library: tested on the mock model, switched on; a second time — nothing new.
+    expect(await addTemplatesForTest(testDeps, brand.id)).toEqual([
+      'mailer_draft',
+      'reels',
+      'seo',
+      'video_summary',
     ]);
-    expect([...a, ...b].sort()).toEqual(['mailer_draft', 'reels', 'seo', 'video_summary']);
-    expect(await installPresets(testDeps, brand.id)).toEqual([]); // once
+    expect(await addTemplatesForTest(testDeps, brand.id)).toEqual([]);
     const seo = await resolveAgent(t.db, brand.id, 'seo');
-    expect(seo).toMatchObject({ status: 'active', kind: 'constructor' });
+    expect(seo).toMatchObject({ status: 'active', kind: 'custom', teamRole: 'acceptor' });
     expect((seo!.spec as { lastTest: { ok: boolean } }).lastTest.ok).toBe(true);
 
     for (const [a, b] of [
@@ -163,6 +165,7 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
 
   it('КП: positions from the catalog, total by code, DOCX and PDF built by the tool step', async () => {
     const { brand } = await upsertBrand(t.db, BrandProfile.parse({ slug: 'kp', name: 'Зерно' }));
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -192,7 +195,12 @@ describe('stage 3: SEO preset (constructor) and Image (code, mock Magnific)', ()
       pricing: pricing(),
       logger: silentLogger,
       storage,
-      executors: codeExecutors({ db: t.db, config, image: new MockImageProvider(), storage }),
+      capabilities: capabilityExecutors({
+        db: t.db,
+        config,
+        image: new MockImageProvider(),
+        storage,
+      }),
     });
     const deps = {
       db: t.db,

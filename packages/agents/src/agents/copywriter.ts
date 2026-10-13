@@ -8,7 +8,14 @@ import {
   type Deliverable,
   type Issue,
 } from '../schemas.js';
-import { json, type AgentContext, type AgentResult } from './context.js';
+import {
+  json,
+  selfModel,
+  selfPrompt,
+  type AgentContext,
+  type AgentResult,
+  type AgentSelf,
+} from './context.js';
 
 export interface RewriteRequest {
   previous: CopyItem;
@@ -30,8 +37,8 @@ export interface CopywriterInput {
   step: string;
 }
 
-export function copywriterSystem(ctx: AgentContext) {
-  const prompt = ctx.prompts.copywriter;
+export function copywriterSystem(ctx: AgentContext, self: AgentSelf) {
+  const prompt = selfPrompt(ctx, self);
   const cliches = loadClicheList();
   return {
     prompt,
@@ -45,14 +52,16 @@ export function copywriterSystem(ctx: AgentContext) {
   };
 }
 
+/** Capability «copywriting»: texts for every deliverable of the plan, 3 variants each. */
 export async function runCopywriter(
   ctx: AgentContext,
   input: CopywriterInput,
+  self: AgentSelf,
 ): Promise<AgentResult<CopywriterOutput>> {
-  const { prompt, system } = copywriterSystem(ctx);
+  const { prompt, system } = copywriterSystem(ctx, self);
   const parts = [
     `Бриф владельца:\n${input.brief}`,
-    `Задача от CEO: ${input.planSummary}`,
+    `Задача от планировщика: ${input.planSummary}`,
     `Единицы контента:\n<deliverables_json>${JSON.stringify(input.deliverables)}</deliverables_json>`,
   ];
   for (const u of input.upstream ?? []) {
@@ -74,10 +83,10 @@ export async function runCopywriter(
       brandId: ctx.brand.id,
       taskId: ctx.taskId,
       runId: ctx.runId,
-      agent: 'copywriter',
+      agent: self.id,
       promptVersion: prompt.version,
     },
-    model: ctx.models.worker,
+    model: selfModel(ctx, self, 'worker'),
     system: input.upstream?.length ? [...system, { text: EXTERNAL_DATA_RULES }] : system,
     prompt: parts.join('\n\n'),
     schema: copywriterOutputSchema(input.deliverables),

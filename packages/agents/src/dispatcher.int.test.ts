@@ -16,7 +16,7 @@ import {
 import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
 import type { NodeExecutor, NodeInput } from './nodes.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow } from './workflow.js';
 import { addLink, loadWorkspace } from './workspace.js';
 
@@ -82,6 +82,7 @@ describe('dispatcher: who gets a step result next (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: `d-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const transport = new ScriptedTransport();
     const queue: string[] = [];
@@ -303,7 +304,7 @@ describe('dispatcher: who gets a step result next (Postgres)', () => {
     const taskId = await s.start();
     const d = (await s.decisions(taskId)).find((x) => x.fromAgent === 'copywriter')!;
     expect(d.targets).toEqual(['seo']);
-    expect((d.reasons as Record<string, string>).seo).toMatch(/SEO обязателен/);
+    expect((d.reasons as Record<string, string>).seo).toMatch(/приёмка\) обязательна/);
     expect(s.ran.seo).toHaveLength(1);
     expect(s.ran.image).toBeUndefined();
   });

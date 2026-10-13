@@ -1,9 +1,7 @@
 import type { Actor, AppConfig, LlmConfig, Logger, ModelPricing } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
 import { releaseWaitingRuns, type ProviderHealth, type Run } from '@cms/engine';
-import { TOOLS } from './tools/registry.js';
-import { listAgents, resolveAgent, type AgentRef } from './agent-registry.js';
-import { AGENTS } from './registry.js';
+import { listAgents, resolveAgent, usesLlm, type AgentRef } from './agent-registry.js';
 import {
   activatePromptVersion,
   activePrompts,
@@ -42,19 +40,20 @@ const DEFAULT_AGENT: AgentControlState = {
   updatedAt: null,
 };
 
-/** Agents a run will call, by run kind. A run waits while any of them is paused or disabled. */
-export function agentsForRun(run: Pick<Run, 'input'>): string[] {
-  switch ((run.input as { kind?: string } | null)?.kind) {
+/**
+ * Agents a run will call, by run kind: the run's own agent and the reviewer that checks its
+ * result. A run waits while any of them is paused, disabled or a draft.
+ */
+export function agentsForRun(run: Pick<Run, 'input' | 'agent'>): string[] {
+  const i = (run.input ?? {}) as { kind?: string; agent?: string; reviewer?: string | null };
+  switch (i.kind) {
     case 'plan':
-      return ['ceo'];
+      return [run.agent];
     case 'copy':
     case 'rework':
-      return ['copywriter', 'critic'];
-    case 'node': {
-      // A board step; when the Critic reviews it, it waits for the Critic as well.
-      const i = run.input as { agent: string; reviewed?: boolean };
-      return i.reviewed ? [i.agent, 'critic'] : [i.agent];
-    }
+      return i.reviewer ? [run.agent, i.reviewer] : [run.agent];
+    case 'node':
+      return i.reviewer ? [i.agent!, i.reviewer] : [i.agent!];
     case 'route':
       return []; // the dispatcher is not an agent: pausing an agent does not hold its hand-off
     default:
@@ -72,7 +71,6 @@ export async function getControlState(db: Db, brandId: string): Promise<ControlS
     .from(agentSettings)
     .where(sql`${agentSettings.brandId} = ${brandId}`);
   const agents: Record<string, AgentControlState> = {};
-  for (const def of AGENTS) agents[def.id] = { ...DEFAULT_AGENT };
   for (const r of rows) {
     agents[r.agent] = {
       paused: r.paused,
@@ -100,17 +98,19 @@ export function makeRunGate(db: Db, health?: ProviderHealth | null) {
       const s = state.agents[a];
       if (s?.paused || s?.disabled) return `agent:${a}`;
     }
-    // A board step of a registry agent that is a draft again (or not built yet) waits for it.
-    if (needed.some((a) => !AGENTS.some((d) => d.id === a))) {
-      const agents = await listAgents(db, run.brandId);
-      for (const a of needed) {
-        const ref = agents.find((r) => r.id === a);
-        if (ref && !ref.code && ref.status !== 'active') return `agent:${a}`;
-      }
+    // A step of an agent that is a draft again waits for it.
+    const agents = needed.length ? await listAgents(db, run.brandId) : [];
+    for (const a of needed) {
+      const ref = agents.find((r) => r.id === a);
+      if (ref && ref.status !== 'active') return `agent:${a}`;
     }
     // The LLM provider is down: a step that calls the model waits instead of failing.
     const routes = (run.input as { kind?: string } | null)?.kind === 'route';
-    if (health && (routes || needed.some((a) => !TOOLS.some((t) => t.id === a)))) {
+    const llm = needed.some((a) => {
+      const ref = agents.find((r) => r.id === a);
+      return !ref || usesLlm(ref);
+    });
+    if (health && (routes || llm)) {
       const v = await health.view();
       if (v.state === 'down' && (v.retryInSeconds ?? 0) > 0) return `provider:${health.provider}`;
     }
@@ -139,24 +139,17 @@ export class AgentControls {
     return Object.keys(this.d.pricing.models).sort();
   }
 
-  /** LLM_MODEL_* from .env with per-agent overrides from the panel applied. */
-  async effectiveModels(brandId: string): Promise<LlmConfig['models']> {
-    const state = await getControlState(this.d.db, brandId);
-    const models = { ...this.d.config.llm.models };
-    for (const def of AGENTS) {
-      const override = state.agents[def.id]?.modelOverride;
-      // An override that is no longer in the price list (provider changed) is not used.
-      if (override && this.allowedModels().includes(override)) models[def.modelRole] = override;
-    }
-    return models;
+  /** LLM_MODEL_* from .env (per-agent overrides are in agentModels()). */
+  effectiveModels(_brandId: string): Promise<LlmConfig['models']> {
+    return Promise.resolve({ ...this.d.config.llm.models });
   }
 
-  /** Model per registry (non-code) agent: its panel override or LLM_MODEL_<role>. */
+  /** Model per agent: its panel override (only from the price list) or LLM_MODEL_<role>. */
   async agentModels(brandId: string): Promise<Record<string, string>> {
     const state = await getControlState(this.d.db, brandId);
     const out: Record<string, string> = {};
     for (const a of await listAgents(this.d.db, brandId)) {
-      if (a.code || !a.modelRole) continue;
+      if (!a.modelRole) continue;
       const o = state.agents[a.id]?.modelOverride;
       out[a.id] = o && this.allowedModels().includes(o) ? o : this.d.config.llm.models[a.modelRole];
     }
@@ -177,15 +170,15 @@ export class AgentControls {
     };
   }
 
-  /** Active prompts: code agents plus every registry agent that has a prompt. */
+  /** Active prompts of every agent that has one. */
   async prompts(brandId: string): Promise<PromptMap> {
-    const extra = (await listAgents(this.d.db, brandId))
-      .filter((a) => !a.code && a.promptAgent)
+    const agents = (await listAgents(this.d.db, brandId))
+      .filter((a) => a.promptAgent)
       .map((a) => a.promptAgent!);
-    return activePrompts(this.d.db, brandId, extra);
+    return activePrompts(this.d.db, brandId, agents);
   }
 
-  /** Agent by id (code or registry); humans and unknown ids -> null. */
+  /** Agent by id; humans, deleted and unknown ids -> null. */
   agent(brandId: string, agentId: string): Promise<AgentRef | null> {
     return resolveAgent(this.d.db, brandId, agentId);
   }

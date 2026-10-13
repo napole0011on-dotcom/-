@@ -1,6 +1,7 @@
 import type { Actor } from '@cms/core';
 import { schema, sql, type Db } from '@cms/db';
 import { resolveAgent, updateConstructorAgent } from './agent-registry.js';
+import { CAPABILITIES } from './capabilities.js';
 import {
   BLOCK_KINDS,
   Composition,
@@ -43,11 +44,6 @@ const audit = (db: Db, brandId: string, actor: Actor, action: string, details: o
 async function editableAgent(db: Db, brandId: string, agentId: string) {
   const ref = await resolveAgent(db, brandId, agentId);
   if (!ref) return { ref: null, problem: 'Нет такого агента' };
-  if (ref.kind !== 'constructor')
-    return {
-      ref,
-      problem: 'Из блоков собираются агенты конструктора; этот агент описан в коде',
-    };
   return { ref, problem: null };
 }
 
@@ -172,8 +168,16 @@ export async function checkComposition(
 ): Promise<{ ok: true; agent: CompiledAgent } | { ok: false; problems: string[] }> {
   const view = await getComposition(db, brandId, agentId);
   if (!view) return { ok: false, problems: ['Нет такого агента'] };
-  const nodes = (await loadWorkspace(db, brandId)).nodes.map((n) => n.id);
-  return compileComposition(view.composition, { allowedModels, nodes });
+  const ws = await loadWorkspace(db, brandId);
+  const reviewers = ws.nodes.filter(
+    (n) => n.teamRole === 'reviewer' && n.status === 'active' && n.id !== agentId,
+  );
+  return compileComposition(view.composition, {
+    allowedModels,
+    nodes: ws.nodes.map((n) => n.id),
+    capabilities: CAPABILITIES.map((c) => c.id),
+    reviewer: reviewers[0]?.id ?? null,
+  });
 }
 
 /**
@@ -206,7 +210,7 @@ export async function buildComposition(
     db,
     brandId,
     agentId,
-    { fields: a.fields, criteria: a.criteria, modelRole: a.modelRole },
+    { fields: a.fields, criteria: a.criteria, modelRole: a.modelRole, capability: a.capability },
     actor,
   );
   if (!upd.ok) return { ok: false, message: upd.message };

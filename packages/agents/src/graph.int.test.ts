@@ -17,7 +17,7 @@ import { BrandProfile, upsertBrand } from './brand.js';
 import { recentEvents } from './events.js';
 import { MockLlmTransport } from './mock-llm.js';
 import type { NodeExecutor, NodeInput } from './nodes.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow } from './workflow.js';
 import { addLink, deleteLink, loadWorkspace, saveLayout } from './workspace.js';
 
@@ -40,6 +40,7 @@ describe('board links drive execution (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: `b-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const seen: NodeInput[] = [];
@@ -212,7 +213,20 @@ describe('board links drive execution (Postgres)', () => {
     expect((await s.audit('link_deleted')).length).toBe(1);
   });
 
-  it('system links cannot be deleted; invalid links are refused; layout is saved and audited', async () => {
+  it('an empty board has only «Бриф» and «Вы»; there are no built-in agents', async () => {
+    const { brand } = await upsertBrand(
+      t.db,
+      BrandProfile.parse({ slug: `e-${Math.random().toString(36).slice(2, 8)}`, name: 'Пусто' }),
+    );
+    const ws = await loadWorkspace(t.db, brand.id);
+    expect(ws.nodes.map((n) => [n.id, n.kind])).toEqual([
+      ['brief', 'human'],
+      ['me', 'human'],
+    ]);
+    expect(ws.links).toEqual([]);
+  });
+
+  it('every link can be deleted; invalid links are refused; layout is saved and audited', async () => {
     const s = await setup();
     const ws = await loadWorkspace(t.db, s.brand.id);
     expect(ws.nodes.map((n) => n.id)).toEqual([
@@ -229,15 +243,17 @@ describe('board links drive execution (Postgres)', () => {
       'mailer_send',
       'me',
     ]);
-    const sys = ws.links.find((l) => l.from === 'ceo' && l.to === 'copywriter')!;
-    expect((await deleteLink(t.db, s.brand.id, sys.id, OWNER)).message).toMatch(/нельзя/);
+    // The old «system» link of the pipeline is an ordinary one: deleted in one click, audited.
+    const main = ws.links.find((l) => l.from === 'ceo' && l.to === 'copywriter')!;
+    expect((await deleteLink(t.db, s.brand.id, main.id, OWNER)).ok).toBe(true);
+    expect((await addLink(t.db, s.brand.id, 'ceo', 'copywriter', OWNER)).ok).toBe(true);
     expect((await addLink(t.db, s.brand.id, 'me', 'seo', OWNER)).ok).toBe(false);
     expect((await addLink(t.db, s.brand.id, 'seo', 'copywriter', OWNER)).ok).toBe(true);
     expect((await addLink(t.db, s.brand.id, 'copywriter', 'seo', OWNER)).message).toMatch(/цикл/);
-    // A link to a planned agent is stored but marked as not working yet.
+    // A link to a draft agent is stored but marked as not working yet.
     await t.db
       .update(schema.agentDefinitions)
-      .set({ status: 'planned' })
+      .set({ status: 'draft' })
       .where(
         sql`${schema.agentDefinitions.brandId} = ${s.brand.id} and ${schema.agentDefinitions.id} = 'image'`,
       );

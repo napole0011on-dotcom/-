@@ -1,0 +1,9 @@
+# Tool (no LLM): builds the KP document (DOCX + PDF) from the result of «КП».
+slug: kp_render
+version: 1
+category: Инструменты
+name: КП → DOCX/PDF
+role: сборка документа КП
+description: Собирает документ коммерческого предложения в DOCX и PDF из результата агента «КП». Без модели.
+team_role: worker
+capability: kp_render

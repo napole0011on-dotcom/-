@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -15,9 +15,8 @@ import {
 import { runAgentTest, TEST_TASK_KIND } from './agent-test.js';
 import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { promptHistory, syncPromptFiles } from './prompt-store.js';
-import { PROMPTS_DIR } from './prompts.js';
-import { RecordingChannel } from './testing.js';
+import { promptHistory } from './prompt-store.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow } from './workflow.js';
 
 const OWNER = { kind: 'human', id: 'panel:owner' } as const;
@@ -39,6 +38,7 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: `b-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -244,11 +244,11 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
     ]);
   });
 
-  it('prompts: DB is the source of truth, edits make versions, rollback, file versions wait', async () => {
+  it('prompts: DB is the source of truth, edits make versions, rollback', async () => {
     const s = await setup();
     const h1 = await promptHistory(t.db, s.brand.id, 'ceo');
     expect(h1.versions).toHaveLength(1);
-    expect(h1.active).toMatchObject({ version: 1, source: 'file' });
+    expect(h1.active).toMatchObject({ version: 1, source: 'panel' });
 
     for (const [text, msg] of [
       ['   ', /пустой/],
@@ -285,33 +285,6 @@ describe('stage 2.5 step 2: agent controls (Postgres)', () => {
       from: saved.label,
       to: v1.label,
     });
-
-    // A changed prompt file is added as a version but NOT activated.
-    const dir = mkdtempSync(path.join(tmpdir(), 'prompts-'));
-    for (const f of [
-      'ceo.md',
-      'copywriter.md',
-      'critic.md',
-      'image.md',
-      'kp.md',
-      'ai-cliches.ru.txt',
-    ])
-      writeFileSync(path.join(dir, f), readFileSync(path.join(PROMPTS_DIR, f)));
-    writeFileSync(
-      path.join(dir, 'ceo.md'),
-      readFileSync(path.join(PROMPTS_DIR, 'ceo.md'), 'utf8').replace(/version: \d+/, 'version: 9') +
-        '\nНовое правило из файла.\n',
-    );
-    const synced = await syncPromptFiles(t.db, s.brand.id, dir);
-    expect(synced).toEqual([
-      { agent: 'ceo', label: expect.stringMatching(/^ceo@3#/) as unknown, activated: false },
-    ]);
-    const h3 = await promptHistory(t.db, s.brand.id, 'ceo');
-    expect(h3.active!.version).toBe(1);
-    expect(h3.pendingFile).toMatchObject({ version: 3, source: 'file', fileVersion: 9 });
-    // Running the sync again changes nothing.
-    expect(await syncPromptFiles(t.db, s.brand.id, dir)).toEqual([]);
-    rmSync(dir, { recursive: true, force: true });
   });
 
   it('test run: mock model, $0, draft prompt, hidden service task, works while paused', async () => {

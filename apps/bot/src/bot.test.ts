@@ -17,7 +17,7 @@ function harness() {
   const actions: BotActions = {
     submitBrief: (text: string, actor: Actor) => (
       done.push(`brief:${text}:${actor.kind}`),
-      Promise.resolve({ taskId: UUID })
+      Promise.resolve({ taskId: UUID, planned: true, message: '' })
     ),
     decidePlan: (id, a, _actor, comment) => (
       done.push(`plan:${a}:${comment ?? ''}`),

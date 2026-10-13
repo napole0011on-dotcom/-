@@ -16,9 +16,8 @@ import {
 import { LocalFsStorage, MockSttProvider } from '@cms/providers';
 import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam, addTemplatesForTest } from './testing.js';
 import { Workflow } from './workflow.js';
-import { installPresets } from './presets.js';
 import { addLink } from './workspace.js';
 
 const OWNER = { kind: 'human', id: 'panel:owner' } as const;
@@ -50,6 +49,7 @@ describe('voice/video -> text (mock STT, real ffmpeg)', () => {
       t.db,
       BrandProfile.parse({ slug: `m-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -170,14 +170,14 @@ describe('voice/video -> text (mock STT, real ffmpeg)', () => {
   it('video -> transcript -> «Видео: кратко» -> Reels: links from the source tool drive the plan', async () => {
     const s = await setup();
     const deps = { db: t.db, config: s.config, controls: s.wf.controls, logger: silentLogger };
-    expect(await installPresets(deps, s.brand.id)).toContain('video_summary');
+    expect(await addTemplatesForTest(deps, s.brand.id)).toContain('video_summary');
     for (const [a, b] of [
       ['video_transcribe', 'video_summary'],
       ['video_summary', 'reels'],
     ] as const)
       expect((await addLink(t.db, s.brand.id, a, b, OWNER)).ok).toBe(true);
-    // Only the allowed targets: a transcript cannot go straight to Image.
-    expect((await addLink(t.db, s.brand.id, 'video_transcribe', 'image', OWNER)).ok).toBe(false);
+    // A transcript never goes to the planner (it gets only the brief); the mailer is never linked.
+    expect((await addLink(t.db, s.brand.id, 'video_transcribe', 'ceo', OWNER)).ok).toBe(false);
     expect((await addLink(t.db, s.brand.id, 'mailer_send', 'critic', OWNER)).ok).toBe(false);
 
     const out = path.join(dir, 'clip.mp4');

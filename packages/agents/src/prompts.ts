@@ -2,16 +2,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const AGENT_NAMES = ['ceo', 'copywriter', 'critic', 'image', 'kp'] as const;
-export type AgentName = (typeof AGENT_NAMES)[number];
-
-/** Prompts of one run: the code agents always, registry agents when they have an active version. */
-export type PromptMap = Record<AgentName, LoadedPrompt> & {
-  [agent: string]: LoadedPrompt | undefined;
-};
-
-export const isCodePromptAgent = (agent: string): agent is AgentName =>
-  (AGENT_NAMES as readonly string[]).includes(agent);
+/** Prompts of one run by agent id: every agent that has an active version. */
+export type PromptMap = Record<string, LoadedPrompt | undefined>;
 
 /** Prompt size limit for versions saved from the panel. */
 export const MAX_PROMPT_BYTES = 32 * 1024;
@@ -38,7 +30,7 @@ export function validatePromptText(raw: string): string | null {
 }
 
 export interface LoadedPrompt {
-  /** Code agent (ceo, copywriter, critic) or a registry agent id (constructor). */
+  /** Agent id (prompt_versions.agent). */
   agent: string;
   text: string;
   /** "copywriter@1#a1b2c3d4": declared version + content hash, stored with every LLM call and artifact. */
@@ -56,9 +48,9 @@ export function parsePrompt(agent: string, raw: string): LoadedPrompt {
   return { agent, text: body, version: promptLabel(agent, m[1]!, promptHash(body)) };
 }
 
-/** Reads the prompt FILE. At runtime agents use the active DB version (prompt-store.ts). */
-export function loadPrompt(agent: AgentName, dir: string = PROMPTS_DIR): LoadedPrompt {
-  return parsePrompt(agent, readFileSync(path.join(dir, `${agent}.md`), 'utf8'));
+/** Reads a prompt FILE (`<dir>/<name>.md`). At runtime agents use the active DB version. */
+export function loadPrompt(name: string, dir: string = PROMPTS_DIR): LoadedPrompt {
+  return parsePrompt(name, readFileSync(path.join(dir, `${name}.md`), 'utf8'));
 }
 
 /** Phrases from ai-cliches.ru.txt ("*" = any ending). */

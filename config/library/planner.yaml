@@ -1,0 +1,11 @@
+# «Планировщик» (role planner): turns a brief into a plan of deliverables for the team.
+slug: planner
+version: 1
+category: Команда
+name: Планировщик
+role: разбирает бриф и составляет план работ
+description: Превращает бриф в список единиц контента для команды и отправляет план вам на утверждение.
+team_role: planner
+model_role: ceo
+basic_team: 1
+prompt_file: prompts/planner.md

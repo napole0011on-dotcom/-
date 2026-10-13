@@ -14,7 +14,14 @@ import { renderBrandForPrompt } from '../brand.js';
 import { genericReview } from '../constructor.js';
 import type { NodeExecutor, NodeFile, NodeInput, NodeRender } from '../nodes.js';
 import { PLATFORM_LABEL, type Platform } from '../schemas.js';
-import { json, type AgentContext, type AgentResult } from './context.js';
+import {
+  json,
+  selfModel,
+  selfPrompt,
+  type AgentContext,
+  type AgentResult,
+  type AgentSelf,
+} from './context.js';
 
 export const ASPECTS = { '4:5': [1080, 1350], '9:16': [1080, 1920], '16:9': [1280, 720] } as const;
 export type Aspect = keyof typeof ASPECTS;
@@ -70,6 +77,8 @@ export interface ImageAgentDeps {
   budget: BudgetContext;
   /** Worst-case price of one image for the budget reservation (0 for the mock). */
   estimateUsd: number;
+  /** The agent record that has the capability (its prompt, model and cost line). */
+  self: AgentSelf;
 }
 
 const CRITERIA = [
@@ -88,8 +97,8 @@ const CRITERIA = [
 export function imageExecutor(d: ImageAgentDeps): NodeExecutor {
   return {
     async run(ctx: AgentContext, input: NodeInput): Promise<AgentResult<ImageOutput>> {
-      const prompt = ctx.prompts.image;
-      const model = ctx.models.worker;
+      const prompt = selfPrompt(ctx, d.self);
+      const model = selfModel(ctx, d.self, 'worker');
       const parts = [
         `Бриф владельца:\n${input.brief}`,
         `План CEO: ${input.plan.summary}\nЕдиницы контента:\n${json(
@@ -127,7 +136,7 @@ export function imageExecutor(d: ImageAgentDeps): NodeExecutor {
           brandId: ctx.brand.id,
           taskId: ctx.taskId,
           runId: ctx.runId,
-          agent: 'image',
+          agent: d.self.id,
           promptVersion: prompt.version,
         },
         model,
@@ -180,11 +189,12 @@ export function imageExecutor(d: ImageAgentDeps): NodeExecutor {
         mimeType: i.mimeType,
       }));
     },
-    review(ctx, input, output) {
+    review(ctx, input, output, reviewer) {
       // The Critic sees the prompts and descriptions, not the pixels.
       const o = output as ImageOutput;
       return genericReview(
         ctx,
+        reviewer,
         input,
         o.images.map(({ deliverableId, prompt, alt, aspect }) => ({
           deliverableId,
@@ -192,7 +202,7 @@ export function imageExecutor(d: ImageAgentDeps): NodeExecutor {
           alt,
           aspect,
         })),
-        { id: 'image', name: 'Image', role: 'задания для картинок к постам', criteria: CRITERIA },
+        { ...d.self, role: 'задания для картинок к постам', criteria: CRITERIA },
       );
     },
   };
@@ -209,7 +219,7 @@ async function generateOne(
     brandId: ctx.brand.id,
     taskId: ctx.taskId,
     runId: ctx.runId,
-    agent: 'image',
+    agent: d.self.id,
     kind: 'image',
     provider: d.provider.name,
     model: 'image',

@@ -121,7 +121,7 @@ describe('TelegramChannel', () => {
     });
     const texts = calls.map((c) => String(c.payload.text));
     expect(texts.every((t) => t.length <= 4096)).toBe(true);
-    expect(texts.join('\n')).toMatch(/Critic НЕ одобрил/);
+    expect(texts.join('\n')).toMatch(/Проверяющий НЕ одобрил/);
     expect(texts.join('\n')).toMatch(/Ваш комментарий учтён: «Короче»/);
     expect(texts.join('\n')).toMatch(/Хук &lt;1&gt; &amp; co/);
     const withButtons = calls.filter((c) => c.payload.reply_markup);

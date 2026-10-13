@@ -1,0 +1,9 @@
+# Tool (no LLM): sends an approved letter after your explicit «Отправить N». Mock until your «ок».
+slug: mailer_send
+version: 1
+category: Инструменты
+name: Отправка писем
+role: рассылка после вашего подтверждения
+description: Отправляет утверждённое письмо адресам с согласием, пачками, после теста себе и вашего «Отправить N». Пока — mock.
+team_role: worker
+capability: mailer_send

@@ -1,0 +1,10 @@
+slug: kp
+version: 1
+category: Продажи
+name: КП
+role: коммерческие предложения по справочнику цен
+description: Текст КП и состав работ из справочника. Цены, итог и НДС считает программа, а не модель. Документ собирает «КП → DOCX/PDF».
+team_role: worker
+capability: kp_draft
+model_role: worker
+prompt_file: prompts/kp.md

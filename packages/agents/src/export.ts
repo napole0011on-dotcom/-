@@ -32,7 +32,7 @@ export interface ExportItem {
   model: string | null;
   deliverable: Deliverable;
   item: CopyItem;
-  critic: Verdict;
+  critic: Verdict | null;
   criticRejected: boolean;
   /** Variant chosen at approval (1-3), null = all variants. */
   choice: number | null;
@@ -91,12 +91,17 @@ export function renderPackageMarkdown(
       }
       out.push('');
     }
+    const v = e.critic;
     out.push(
-      `Critic: ${e.critic.passed ? 'одобрено' : e.criticRejected ? 'НЕ одобрено после 2 доработок' : 'есть замечания'} — ${e.critic.summary}`,
-      ...CHECK_NAMES.map(
-        (c) =>
-          `- ${CHECK_LABEL[c]}: ${e.critic.checks[c].ok ? 'ок' : 'нет'}${e.critic.checks[c].comment ? ` (${e.critic.checks[c].comment})` : ''}`,
-      ),
+      ...(v
+        ? [
+            `Проверка: ${v.passed ? 'одобрено' : e.criticRejected ? 'НЕ одобрено после 2 доработок' : 'есть замечания'} — ${v.summary}`,
+            ...CHECK_NAMES.map(
+              (c) =>
+                `- ${CHECK_LABEL[c]}: ${v.checks[c].ok ? 'ок' : 'нет'}${v.checks[c].comment ? ` (${v.checks[c].comment})` : ''}`,
+            ),
+          ]
+        : ['Проверка: без проверки (на доске нет проверяющего)']),
       '',
       `Версия ${e.version}, промпт ${e.promptVersion}, модель ${e.model ?? '—'}`,
       '',

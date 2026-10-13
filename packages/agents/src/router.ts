@@ -3,9 +3,6 @@ import { z } from 'zod';
 import { EXTERNAL_DATA_RULES, wrapExternalData } from '@cms/engine';
 import type { AgentContext, AgentResult } from './agents/context.js';
 
-/** The SEO step cannot be bypassed: when an agent is linked to it, its result goes through SEO. */
-export const REQUIRED_TARGETS = ['seo'] as const;
-
 /** One possible next step for a result: an agent the result can be handed to (its outgoing link). */
 export interface RouteCandidate {
   id: string;

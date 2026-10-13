@@ -12,8 +12,7 @@ import {
 import { MockMailSender } from '@cms/providers';
 import { BrandProfile, upsertBrand } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { installPresets } from './presets.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam, addTemplatesForTest } from './testing.js';
 import {
   audienceStats,
   createCampaign,
@@ -49,6 +48,7 @@ describe('mailing (mock): consent, test email, explicit N, batches, idempotency,
       t.db,
       BrandProfile.parse({ slug: `mail-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const sender = new MockMailSender();
@@ -90,7 +90,7 @@ describe('mailing (mock): consent, test email, explicit N, batches, idempotency,
         await processRun(deps, queue.shift()!, wf.handleRun, new AbortController().signal);
     };
     // A «Письмо» result from a normal task (mock text has {{name}} and {{unsubscribe_url}}).
-    await installPresets(
+    await addTemplatesForTest(
       { db: t.db, config, controls: wf.controls, logger: silentLogger },
       brand.id,
     );

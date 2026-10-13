@@ -18,8 +18,15 @@ import {
   validatePromptText,
   type PromptMap,
 } from './prompts.js';
-import { constructorSpecOf, recordAgentTest } from './agent-registry.js';
-import { ConstructorSpec, constructorExecutor, specHash } from './constructor.js';
+import {
+  constructorSpecOf,
+  needsFields,
+  recordAgentTest,
+  specHashOf,
+  usesLlm,
+} from './agent-registry.js';
+import { ConstructorSpec, constructorExecutor } from './constructor.js';
+import { capabilityById } from './capabilities.js';
 import type { GenericVerdict, NodeInput, NodeRender } from './nodes.js';
 import type { CeoPlan, Deliverable } from './schemas.js';
 
@@ -78,6 +85,9 @@ export interface AgentTestDeps {
   logger: Logger;
 }
 
+/** The writer of sample texts for tests of agents that work on texts (not an agent). */
+const SAMPLE_WRITER = { id: 'sample_writer', name: 'Тексты (пример)' };
+
 const SAMPLE_PLAN: CeoPlan = {
   summary: 'Тестовый план: два текста про осеннее меню',
   assumptions: [],
@@ -109,13 +119,13 @@ export async function runAgentTest(
     message,
     output: null,
   });
-  if (!ref?.promptAgent || !ref.modelRole) return fail('Нет такого агента');
+  if (!ref) return fail('Нет такого агента');
   if (opts.promptText != null) {
     const problem = validatePromptText(opts.promptText);
     if (problem) return fail(problem);
   }
   let spec: ConstructorSpec | null = null;
-  if (ref.kind === 'constructor') {
+  if (needsFields(ref)) {
     if (opts.spec != null) {
       const parsed = ConstructorSpec.safeParse(opts.spec);
       if (!parsed.success) return fail(parsed.error.issues[0]?.message ?? 'Неверные поля');
@@ -128,7 +138,7 @@ export async function runAgentTest(
   const agentModels = await d.controls.agentModels(brandId);
   const prompts: PromptMap = { ...(await d.controls.prompts(brandId)) };
   const draft = opts.promptText != null;
-  if (draft) {
+  if (draft && ref.promptAgent) {
     const text = normalizePromptText(opts.promptText!);
     prompts[ref.promptAgent] = {
       agent: ref.promptAgent,
@@ -136,8 +146,17 @@ export async function runAgentTest(
       version: promptLabel(ref.promptAgent, 'draft', promptHash(text)),
     };
   }
-  const prompt = prompts[ref.promptAgent];
-  if (!prompt) return fail('Сначала сохраните промпт агента (или напишите его в редакторе)');
+  const callsLlm = usesLlm(ref);
+  const prompt = ref.promptAgent ? prompts[ref.promptAgent] : undefined;
+  if (callsLlm && !prompt)
+    return fail('Сначала сохраните промпт агента (или напишите его в редакторе)');
+  // Sample texts for agents that work on texts (reviewer, image, fields): a throwaway writer.
+  prompts[SAMPLE_WRITER.id] = {
+    agent: SAMPLE_WRITER.id,
+    text: 'Пиши тексты для постов бренда.',
+    version: 'sample-writer@test',
+  };
+  const self = { id: ref.id, name: ref.name };
 
   const { id: taskId } = await createTask(d.db, {
     brandId,
@@ -167,8 +186,8 @@ export async function runAgentTest(
     runId: null,
     callKey: `agent-test:${taskId}`,
   };
-  const promptVersion = prompt.version;
-  const model = ref.code ? models[ref.modelRole] : (agentModels[ref.id] ?? models[ref.modelRole]);
+  const promptVersion = prompt?.version ?? `${ref.id}@tool`;
+  const model = ref.modelRole ? (agentModels[ref.id] ?? models[ref.modelRole]) : 'tool';
   const started = Date.now();
   const copyInput = {
     brief: SAMPLE_BRIEF,
@@ -180,67 +199,69 @@ export async function runAgentTest(
   let render: NodeRender | null = null;
   let review: GenericVerdict | null = null;
   // Only a test of what is saved counts for activation (not a draft from the editor).
-  const record = spec !== null && !draft && opts.spec == null;
+  const record = !draft && opts.spec == null;
   const finish = async (ok: boolean, message: string) => {
     if (record)
       await recordAgentTest(d.db, brandId, ref.id, {
         ok,
         at: new Date().toISOString(),
         message,
-        specHash: specHash(spec!),
+        specHash: specHashOf(ref),
         promptVersion,
       });
   };
+  const sampleCopy = async () => (await runCopywriter(ctx, copyInput, SAMPLE_WRITER)).output.items;
   try {
     let output: unknown;
+    const sampleUpstream = async (): Promise<NodeInput> => ({
+      brief: SAMPLE_BRIEF,
+      plan: SAMPLE_PLAN,
+      upstream: [{ agent: SAMPLE_WRITER.id, name: 'Тексты (пример)', items: await sampleCopy() }],
+      previous: null,
+      ownerComment: null,
+      criticIssues: [],
+      mode: 'first',
+      step: 'test',
+    });
     if (spec) {
-      const copy = await runCopywriter(ctx, copyInput);
-      const nodeInput: NodeInput = {
-        brief: SAMPLE_BRIEF,
-        plan: SAMPLE_PLAN,
-        upstream: [{ agent: 'copywriter', name: 'Копирайтер', items: copy.output.items }],
-        previous: null,
-        ownerComment: null,
-        criticIssues: [],
-        mode: 'first',
-        step: 'test',
-      };
-      input = { brief: SAMPLE_BRIEF, plan: SAMPLE_PLAN.summary, upstream: 'Копирайтер (пример)' };
+      const nodeInput = await sampleUpstream();
+      input = { brief: SAMPLE_BRIEF, plan: SAMPLE_PLAN.summary, upstream: 'Тексты (пример)' };
       const exec = constructorExecutor({ id: ref.id, name: ref.name, role: ref.role, spec });
       output = (await exec.run(ctx, nodeInput)).output;
       render = exec.render(output);
-      review = (await exec.review!(ctx, nodeInput, output)).output;
-    } else if (ref.id === 'ceo') {
+      review = (await exec.review!(ctx, nodeInput, output, self)).output;
+    } else if (ref.teamRole === 'planner') {
       input = { brief: SAMPLE_BRIEF };
-      output = (await runCeo(ctx, { brief: SAMPLE_BRIEF })).output;
-    } else if (ref.id === 'copywriter') {
+      output = (await runCeo(ctx, { brief: SAMPLE_BRIEF }, self)).output;
+    } else if (ref.teamRole === 'reviewer') {
+      const items = await sampleCopy();
+      input = { brief: SAMPLE_BRIEF, items };
+      output = (
+        await runCritic(
+          ctx,
+          { brief: SAMPLE_BRIEF, deliverables: SAMPLE_DELIVERABLES, items, step: 'test' },
+          self,
+        )
+      ).output;
+    } else if (ref.capability === 'copywriting') {
       input = copyInput;
-      output = (await runCopywriter(ctx, copyInput)).output;
-    } else if (ref.id === 'image') {
+      output = (await runCopywriter(ctx, copyInput, self)).output;
+    } else if (ref.capability === 'image_generate') {
       // Mock image generator and in-memory storage: free, nothing is kept.
-      const copy = await runCopywriter(ctx, copyInput);
-      const nodeInput: NodeInput = {
-        brief: SAMPLE_BRIEF,
-        plan: SAMPLE_PLAN,
-        upstream: [{ agent: 'copywriter', name: 'Копирайтер', items: copy.output.items }],
-        previous: null,
-        ownerComment: null,
-        criticIssues: [],
-        mode: 'first',
-        step: 'test',
-      };
-      input = { brief: SAMPLE_BRIEF, plan: SAMPLE_PLAN.summary, upstream: 'Копирайтер (пример)' };
+      const nodeInput = await sampleUpstream();
+      input = { brief: SAMPLE_BRIEF, plan: SAMPLE_PLAN.summary, upstream: 'Тексты (пример)' };
       const exec = imageExecutor({
         db: d.db,
         provider: new MockImageProvider(),
         storage: memoryStorage(),
         budget: { config: d.config.budget, timeZone: d.config.timezone },
         estimateUsd: 0,
+        self,
       });
       output = (await exec.run(ctx, nodeInput)).output;
       render = exec.render(output);
-      review = (await exec.review!(ctx, nodeInput, output)).output;
-    } else if (ref.id === 'kp') {
+      review = (await exec.review!(ctx, nodeInput, output, self)).output;
+    } else if (ref.capability === 'kp_draft') {
       input = { brief: SAMPLE_KP_BRIEF, catalog: d.config.kp.catalogFile };
       const nodeInput: NodeInput = {
         brief: SAMPLE_KP_BRIEF,
@@ -255,21 +276,17 @@ export async function runAgentTest(
       const exec = kpExecutor({
         catalogFile: d.config.kp.catalogFile,
         vatPercent: d.config.kp.vatPercent,
+        self,
       });
       output = (await exec.run(ctx, nodeInput)).output;
       render = exec.render(output);
-      review = (await exec.review!(ctx, nodeInput, output)).output;
-    } else if (ref.id === 'critic') {
-      const copy = await runCopywriter(ctx, copyInput);
-      input = { brief: SAMPLE_BRIEF, items: copy.output.items };
-      output = (
-        await runCritic(ctx, {
-          brief: SAMPLE_BRIEF,
-          deliverables: SAMPLE_DELIVERABLES,
-          items: copy.output.items,
-          step: 'test',
-        })
-      ).output;
+      review = (await exec.review!(ctx, nodeInput, output, self)).output;
+    } else if (!callsLlm) {
+      // A tool capability: code without a model. Its guards (permissions, mock by default,
+      // a gate before irreversible actions) are checked by its own tests; here nothing to call.
+      const cap = capabilityById(ref.capability);
+      input = { capability: ref.capability };
+      output = { tool: cap?.name ?? ref.capability, model: 'нет (инструмент)' };
     } else {
       return fail(`Для агента ${ref.name} тест пока не настроен`);
     }

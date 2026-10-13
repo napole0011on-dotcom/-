@@ -68,9 +68,9 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   tool: {
     type: 'tool',
     label: 'Инструмент',
-    hint: 'Шаг-инструмент после агента (на доске — связь агент → инструмент)',
-    accepts: ['output'],
-    max: 3,
+    hint: 'Возможность, которую выполняет код (картинки, КП, расшифровка, почта): агент становится инструментом',
+    accepts: ['model'],
+    max: 1,
     required: false,
   },
   check: {
@@ -202,7 +202,9 @@ export interface CompiledAgent {
   criteria: string[];
   modelRole: 'worker' | 'ceo' | 'critic';
   model: string | null;
-  /** Board links to create: agent -> these nodes (tools, hand-offs, «Вы»). */
+  /** Capability from the «Инструмент» block (null: an LLM agent by its fields). */
+  capability: string | null;
+  /** Board links to create: agent -> these nodes (hand-offs, «Вы»). */
   links: string[];
 }
 
@@ -212,7 +214,14 @@ export interface CompiledAgent {
  */
 export function compileComposition(
   c: Composition,
-  opts: { allowedModels: readonly string[]; nodes: readonly string[] },
+  opts: {
+    allowedModels: readonly string[];
+    nodes: readonly string[];
+    /** Capability ids an agent can be given. */
+    capabilities?: readonly string[];
+    /** The reviewer the «Проверка» block links to (an active agent with role «Проверяющий»). */
+    reviewer?: string | null;
+  },
 ): { ok: true; agent: CompiledAgent } | { ok: false; problems: string[] } {
   const problems: string[] = [];
   const of = (t: BlockType) => c.blocks.filter((b) => b.type === t);
@@ -268,11 +277,13 @@ export function compileComposition(
     : [];
   if (check && criteria.length === 0) problems.push('«Проверка»: добавьте хотя бы один критерий');
   const links: string[] = [];
+  let capability: string | null = null;
   for (const b of of('tool')) {
     const t = cfg(b, 'tool').tool;
-    if (!t) problems.push('«Инструмент»: выберите инструмент');
-    else if (!opts.nodes.includes(t)) problems.push(`«Инструмент»: нет такого инструмента (${t})`);
-    else links.push(t);
+    if (!t) problems.push('«Инструмент»: выберите возможность');
+    else if (opts.capabilities && !opts.capabilities.includes(t))
+      problems.push(`«Инструмент»: нет такой возможности (${t})`);
+    else capability = t;
   }
   for (const b of of('handoff')) {
     const a = cfg(b, 'handoff').agent;
@@ -281,7 +292,13 @@ export function compileComposition(
     else links.push(a);
   }
   if (of('gate').length) links.push('me');
-  if (check) links.unshift('critic');
+  if (check) {
+    if (opts.reviewer) links.unshift(opts.reviewer);
+    else
+      problems.push(
+        '«Проверка»: на доске нет проверяющего — добавьте агента с ролью «Проверяющий»',
+      );
+  }
 
   if (problems.length) return { ok: false, problems: [...new Set(problems)] };
   const prompt = [
@@ -297,6 +314,7 @@ export function compileComposition(
       criteria,
       modelRole: model.modelRole,
       model: model.model,
+      capability,
       links: [...new Set(links)],
     },
   };

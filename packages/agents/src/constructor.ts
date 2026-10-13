@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { EXTERNAL_DATA_RULES, wrapExternalData } from '@cms/engine';
-import type { AgentContext, AgentResult } from './agents/context.js';
-import { json } from './agents/context.js';
+import type { AgentContext, AgentResult, AgentSelf } from './agents/context.js';
+import { json, selfModel } from './agents/context.js';
 import { renderBrandForPrompt } from './brand.js';
 import type { GenericVerdict, NodeExecutor, NodeInput, NodeRender } from './nodes.js';
 import { promptHash, promptLabel } from './prompts.js';
@@ -51,9 +51,23 @@ export const ConstructorSpec = z
 export type ConstructorSpec = z.infer<typeof ConstructorSpec>;
 
 /** Hash of what defines behaviour (fields + criteria): a test is valid only for this hash. */
-export const specHash = (s: Pick<ConstructorSpec, 'fields' | 'criteria'>) =>
+export const specHash = (
+  s: Pick<ConstructorSpec, 'fields' | 'criteria'> & {
+    /** Behaviour beyond the fields: a test is valid only for this role and capability. */
+    teamRole?: string | null;
+    capability?: string | null;
+  },
+) =>
   createHash('sha256')
-    .update(JSON.stringify({ fields: s.fields, criteria: s.criteria }))
+    .update(
+      JSON.stringify({
+        fields: s.fields,
+        criteria: s.criteria,
+        // A plain worker hashes as before stage 7 (its passed test stays valid).
+        ...(s.teamRole && s.teamRole !== 'worker' ? { teamRole: s.teamRole } : {}),
+        ...(s.capability ? { capability: s.capability } : {}),
+      }),
+    )
     .digest('hex')
     .slice(0, 12);
 
@@ -176,6 +190,7 @@ export const GENERIC_CRITIC_VERSION = promptLabel(
  */
 export async function genericReview(
   ctx: AgentContext,
+  reviewer: AgentSelf,
   input: NodeInput,
   output: unknown,
   def: { id: string; name: string; role: string; criteria?: readonly string[] },
@@ -188,10 +203,10 @@ export async function genericReview(
       brandId: ctx.brand.id,
       taskId: ctx.taskId,
       runId: ctx.runId,
-      agent: 'critic',
+      agent: reviewer.id,
       promptVersion: GENERIC_CRITIC_VERSION,
     },
-    model: ctx.models.critic,
+    model: selfModel(ctx, reviewer, 'critic'),
     system: [
       { text: GENERIC_CRITIC_PROMPT, cache: true },
       { text: renderBrandForPrompt(ctx.brand), cache: true },
@@ -256,8 +271,8 @@ export function constructorExecutor(def: ConstructorAgentDef): NodeExecutor {
     render(output: unknown) {
       return renderBySpec('Результат', def.spec.fields, output);
     },
-    review(ctx, input, output) {
-      return genericReview(ctx, input, output, { ...def, criteria: def.spec.criteria });
+    review(ctx, input, output, reviewer) {
+      return genericReview(ctx, reviewer, input, output, { ...def, criteria: def.spec.criteria });
     },
   };
 }

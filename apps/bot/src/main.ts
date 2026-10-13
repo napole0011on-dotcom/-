@@ -9,7 +9,13 @@ import {
 } from '@cms/core';
 import { Api } from 'grammy';
 import { createDb, createPool, migrationStatus } from '@cms/db';
-import { LlmClient, RunQueue, createLlmTransport, runMaintenance } from '@cms/engine';
+import {
+  LlmClient,
+  RunQueue,
+  createLlmTransport,
+  runMaintenance,
+  startWorkerHeartbeat,
+} from '@cms/engine';
 import {
   createMailSender,
   createProviders,
@@ -19,11 +25,10 @@ import {
 import {
   MockLlmTransport,
   Workflow,
-  codeExecutors,
+  capabilityExecutors,
   loadBrandProfileFile,
   ensureWorkspace,
-  syncPromptFiles,
-  installPresets,
+  syncLibrary,
   purgeExpiredMedia,
   upsertBrand,
 } from '@cms/agents';
@@ -70,11 +75,11 @@ async function main() {
   const pricing = loadPricing(config.llm.pricingFile);
   const { brand } = await upsertBrand(db, loadBrandProfileFile(config.brandProfileFile));
   let brandId = brand.id;
-  // prompts/*.md -> DB: the first start seeds and activates; later file edits become new
-  // versions that the owner activates in the panel.
+  // No built-in agents: the board starts with «Бриф» and «Вы»; the library gets the starting
+  // templates from config/library (new and changed files; the owner's edits are kept).
   await ensureWorkspace(db, brand.id);
-  const promptSync = await syncPromptFiles(db, brand.id);
-  if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
+  const library = await syncLibrary(db, brand.id);
+  if (library.added.length || library.updated.length) logger.info(library, 'library synced');
 
   const transport =
     config.llm.provider === 'mock' ? new MockLlmTransport() : createLlmTransport(config.llm);
@@ -108,15 +113,8 @@ async function main() {
     storage,
     stt: createSttProvider(config),
     mail: createMailSender(config),
-    executors: codeExecutors({ db, config, image: providers.image, storage }),
+    capabilities: capabilityExecutors({ db, config, image: providers.image, storage }),
   });
-
-  // Ready-made constructor agents (SEO): saved, tested on the mock ($0), switched on once.
-  const presets = await installPresets(
-    { db, config, controls: workflow.controls, logger },
-    brand.id,
-  );
-  if (presets.length) logger.info({ presets }, 'preset agents installed');
 
   const queue = await RunQueue.start({
     config,
@@ -148,6 +146,8 @@ async function main() {
   });
   queueRef.q = queue;
   await queue.work(workflow.handleRun);
+  // The panel shows «Воркер не запущен» when these beats stop.
+  const stopHeartbeat = startWorkerHeartbeat(db, logger);
   await queue.scheduleMaintenance('*/5 * * * *', async () => {
     // Audio/video past MEDIA_RETENTION_DAYS are deleted; transcripts stay.
     await purgeExpiredMedia({ db, storage, logger }).catch((err: unknown) =>
@@ -180,6 +180,7 @@ async function main() {
     logger.info({ signal }, 'shutting down');
     await bot.stop();
     await queue.stop();
+    await stopHeartbeat();
     await pool.end();
     process.exit(0);
   };
@@ -191,11 +192,9 @@ async function main() {
       '✅ Бот запущен.',
       describeLlmSetup(config, pricing),
       `Бренд: ${brand.name}, профиль v${brand.profileVersion}.`,
-      ...promptSync
-        .filter((p) => !p.activated)
-        .map(
-          (p) => `📝 Есть новая версия промпта из файла: ${p.label} — включить её можно в панели.`,
-        ),
+      ...(library.added.length
+        ? [`📚 В библиотеке новые шаблоны агентов: ${library.added.length}.`]
+        : []),
       `Лимиты бюджета: задача $${config.budget.taskUsd}, день $${config.budget.dailyUsd}, месяц $${config.budget.monthlyUsd}.`,
     ].join('\n'),
   });

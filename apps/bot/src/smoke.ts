@@ -31,7 +31,7 @@ import {
 } from '@cms/engine';
 import { MockNotifier } from '@cms/providers';
 import {
-  activePrompts,
+  loadLibraryFiles,
   copywriterSystem,
   runCeo,
   getBrand,
@@ -89,18 +89,34 @@ async function main() {
       `Hard limit for this test: $${SMOKE_LIMIT_USD}, safety factor x${config.llm.costSafetyFactor}\n`,
     );
 
-    // A real agent system prompt (copywriter + brand profile, cached) so the prompt is long enough to cache.
+    // Real system prompts from the library templates (copywriter + brand profile, cached) so
+    // the prompt is long enough to cache. No agent is created: smoke only calls the model.
+    const tpl = (teamRole: string, capability: string | null) =>
+      loadLibraryFiles().find((t) => t.teamRole === teamRole && t.capability === capability)!;
+    const writer = { id: 'smoke_writer', name: 'Тексты (smoke)' };
+    const planner = { id: 'smoke_planner', name: 'Планировщик (smoke)' };
     const agentCtx = {
       llm,
       models: config.llm.models,
-      prompts: await activePrompts(db, brand.id),
+      prompts: {
+        [writer.id]: {
+          agent: writer.id,
+          text: tpl('worker', 'copywriting').prompt!,
+          version: 'smoke-writer@lib',
+        },
+        [planner.id]: {
+          agent: planner.id,
+          text: tpl('planner', null).prompt!,
+          version: 'smoke-planner@lib',
+        },
+      },
       agentModels: {},
       brand: await getBrand(db, brand.id),
       taskId,
       runId: null,
       callKey: `smoke:${taskId}`,
     };
-    const { system } = copywriterSystem(agentCtx);
+    const { system } = copywriterSystem(agentCtx, writer);
     const schemaOut = z.object({
       greeting: z.string().min(5).max(300),
       wordCount: z.number().int().min(1),
@@ -132,6 +148,7 @@ async function main() {
           const r = await runCeo(
             { ...agentCtx, models: config.llm.models, callKey: `smoke:${taskId}:ceo` },
             { brief: 'Пост для Instagram про осеннее меню кофейни' },
+            planner,
           );
           console.log(
             `CEO request OK: ${r.output.deliverables.length} deliverables, cost $${r.costUsd.toFixed(6)}`,

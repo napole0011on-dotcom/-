@@ -1,0 +1,9 @@
+# Tool (no LLM): voice message -> text with timecodes (whisper.cpp locally, or mock).
+slug: stt_voice
+version: 1
+category: Инструменты
+name: Голос → текст
+role: расшифровка голосовых
+description: Расшифровывает голосовые из Telegram и панели. Связи от него решают, кому идёт расшифровка.
+team_role: worker
+capability: stt_voice

@@ -24,7 +24,7 @@ export interface PackageItemView {
   version: number;
   deliverable: Deliverable;
   item: CopyItem;
-  critic: Verdict;
+  critic: Verdict | null;
   /** Critic review rounds this version went through (max 3: draft + 2 revisions). */
   criticRound: number;
   /** Critic still disagreed after the maximum number of revisions. */

@@ -31,6 +31,10 @@ import {
   importTemplate,
   listTemplates,
   saveAgentAsTemplate,
+  CAPABILITIES,
+  createBasicTeam,
+  deleteTemplate,
+  updateTemplate,
 } from '@cms/agents';
 import type { ObjectStorage } from '@cms/providers';
 import type { EventHub } from './event-hub.js';
@@ -267,11 +271,19 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     if (!body.success)
       return reply.code(400).send({ ok: false, message: body.error.issues[0]!.message });
     try {
-      const { taskId } = await d.workflow.submitBrief(d.brandId(), body.data.brief, ACTOR);
+      const r = await d.workflow.submitBrief(d.brandId(), body.data.brief, ACTOR);
       await d.mirror
-        .notify(`🖥 В панели создана задача: «${await titleOf(taskId)}». CEO готовит план.`)
+        .notify(
+          `🖥 В панели создана задача: «${await titleOf(r.taskId)}». ${r.planned ? 'Планировщик готовит план.' : r.message}`,
+        )
         .catch(() => undefined);
-      return { ok: true, taskId, message: 'Задача создана, CEO готовит план' };
+      // The task is created either way; without a planner it waits and says why.
+      return {
+        ok: true,
+        taskId: r.taskId,
+        planned: r.planned,
+        message: r.planned ? 'Задача создана, планировщик готовит план' : r.message,
+      };
     } catch (err) {
       return reply
         .code(400)
@@ -497,6 +509,8 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     role: z.string().max(400),
     description: z.string().max(2000).optional(),
     modelRole: z.string().max(20).optional(),
+    teamRole: z.string().max(20).optional(),
+    capability: z.string().max(40).nullable().optional(),
     prompt: z.string().max(200_000).nullable().optional(),
   });
   app.post('/api/agents', async (req, reply) => {
@@ -518,6 +532,7 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     role: z.string().max(400).optional(),
     description: z.string().max(2000).optional(),
     modelRole: z.string().max(20).optional(),
+    teamRole: z.enum(['planner', 'reviewer', 'worker', 'acceptor']).optional(),
     fields: z.array(z.unknown()).max(50).optional(),
     criteria: z.array(z.unknown()).max(50).optional(),
   });
@@ -539,7 +554,51 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
     );
   });
   // ---------------------------------------------------------------- agent library
-  const templateId = z.string().regex(/^(sys|own):[a-z][a-z0-9_]{1,39}$/);
+  const templateId = z.string().regex(/^[a-z][a-z0-9_]{1,39}$/);
+  /** «Базовая команда»: Планировщик, Копирайтер, Проверяющий from the library, linked, tested, on. */
+  app.post('/api/library/team', (_req, reply) =>
+    control(reply, () =>
+      createBasicTeam(
+        {
+          db: d.db,
+          config: d.config,
+          controls: d.controls,
+          logger: d.logger,
+          release: () => d.controls.release(),
+        },
+        brand(),
+        ACTOR,
+      ),
+    ),
+  );
+  app.post<{ Params: { id: string } }>('/api/library/:id/update', async (req, reply) => {
+    const id = templateId.safeParse(req.params.id);
+    const body = z
+      .object({
+        name: z.string().max(200).optional(),
+        role: z.string().max(400).optional(),
+        description: z.string().max(2000).optional(),
+        category: z.enum(CATEGORIES).optional(),
+        prompt: z.string().max(20_000).optional(),
+        criteria: z.array(z.string().max(300)).max(15).optional(),
+        teamRole: z.enum(['planner', 'reviewer', 'worker', 'acceptor']).optional(),
+      })
+      .safeParse(req.body);
+    if (!id.success || !body.success)
+      return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () => updateTemplate(d.db, brand(), id.data, body.data, ACTOR));
+  });
+  app.post<{ Params: { id: string } }>('/api/library/:id/delete', async (req, reply) => {
+    const id = templateId.safeParse(req.params.id);
+    if (!id.success) return reply.code(400).send({ ok: false, message: 'Неверные данные' });
+    return control(reply, () => deleteTemplate(d.db, brand(), id.data, ACTOR));
+  });
+  /** «Запустить планирование»: a task that waited for a planner. */
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/plan-start', async (req, reply) => {
+    if (!uuid.safeParse(req.params.id).success)
+      return reply.code(400).send({ ok: false, message: 'Неверный id' });
+    return control(reply, () => d.workflow.retryPlanning(req.params.id, ACTOR));
+  });
   app.get('/api/library', async () => ({
     categories: CATEGORIES,
     templates: await listTemplates(d.db, brand()),
@@ -590,13 +649,17 @@ export async function registerPanel(app: FastifyInstance, panelDeps: PanelDeps):
       ...view,
       agent: ws.nodes.find((n) => n.id === agent.data),
       models: d.controls.allowedModels(),
-      // Tools a result can be handed to (sources and the mailer are not linked from agents).
-      tools: ws.nodes
-        .filter((n) => n.kind === 'tool' && n.id === 'kp_render')
-        .map((n) => ({ id: n.id, name: n.name })),
+      // «Инструмент»: capabilities the agent can be given (code behaviour; mock by default).
+      tools: CAPABILITIES.map((c) => ({
+        id: c.id,
+        name: c.name,
+        kind: c.kind,
+        realNeeds: c.realNeeds,
+      })),
+      // «Передача»: agents the result can be handed to (not the planner, not a reviewer).
       agents: ws.nodes
-        .filter((n) => n.kind !== 'tool' && n.kind !== 'human' && n.id !== agent.data)
-        .filter((n) => !['ceo', 'critic'].includes(n.id))
+        .filter((n) => n.kind !== 'human' && n.id !== agent.data)
+        .filter((n) => n.teamRole !== 'planner' && n.teamRole !== 'reviewer')
         .map((n) => ({ id: n.id, name: n.name, status: n.status })),
       problems: check.ok ? [] : check.problems,
     };

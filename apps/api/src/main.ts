@@ -17,8 +17,7 @@ import {
   Workflow,
   loadBrandProfileFile,
   ensureWorkspace,
-  syncPromptFiles,
-  installPresets,
+  syncLibrary,
   upsertBrand,
   type OwnerChannel,
 } from '@cms/agents';
@@ -74,8 +73,9 @@ async function main() {
   const pricing = loadPricing(config.llm.pricingFile);
   const { brand } = await upsertBrand(db, loadBrandProfileFile(config.brandProfileFile));
   await ensureWorkspace(db, brand.id);
-  const promptSync = await syncPromptFiles(db, brand.id);
-  if (promptSync.length) logger.info({ prompts: promptSync }, 'prompt files synced');
+  // Starting templates of the library (config/library); the owner's edits are kept.
+  const library = await syncLibrary(db, brand.id);
+  if (library.added.length || library.updated.length) logger.info(library, 'library synced');
   const budget = { config: config.budget, timeZone: config.timezone };
   const queue = await RunQueue.start({
     config,
@@ -113,11 +113,6 @@ async function main() {
   const events = new EventHub(pool, db, () => brand.id, logger);
   await events.start();
   // Ready-made constructor agents (SEO): saved, tested on the mock ($0), switched on once.
-  const presets = await installPresets(
-    { db, config, controls: workflow.controls, logger },
-    brand.id,
-  );
-  if (presets.length) logger.info({ presets }, 'preset agents installed');
 
   await registerPanel(app, {
     db,

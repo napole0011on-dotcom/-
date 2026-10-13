@@ -1,3 +1,4 @@
+import { seedTestTeam } from '@cms/agents/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hashPassword, loadPricing, type AppConfig } from '@cms/core';
 import { schema, sql } from '@cms/db';
@@ -36,6 +37,7 @@ describe('web panel API (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: 'panel-test', name: 'Кофейня' }),
     );
+    await seedTestTeam(t.db, brand.id);
     brandId = brand.id;
     const llmCfg = llmConfig({ provider: 'mock', apiKey: SECRETS[0] });
     const config: AppConfig = {
@@ -562,13 +564,13 @@ describe('web panel API (Postgres)', () => {
         .select({ action: schema.auditLog.action, actor: schema.auditLog.actorId })
         .from(schema.auditLog)
         .where(
-          sql`${schema.auditLog.action} in ('agent_paused','agent_resumed','agent_model_changed','prompt_saved','prompt_activated','stop_all','resume_all','agent_test')`,
+          sql`${schema.auditLog.action} in ('agent_paused','agent_resumed','agent_model_changed','prompt_saved','prompt_activated','stop_all','resume_all','agent_test') and ${schema.auditLog.actorId} <> 'test:fixture'`,
         );
       expect(new Set(audit.map((a) => a.action)).size).toBe(8);
       expect(audit.every((a) => a.actor === 'panel:owner')).toBe(true);
     });
 
-    it('constructor: create draft, fields, prompt, test, activate; code agents are protected', async () => {
+    it('constructor: create draft, fields, prompt, test, activate; every agent is editable and deletable', async () => {
       const s = await loginOk();
       mirrored.length = 0;
       const created = await post(s, '/api/agents', {
@@ -591,7 +593,7 @@ describe('web panel API (Postgres)', () => {
         prompts: { active: { label: string } | null };
       };
       let st = (await get(s, `/api/agents/${id}/settings`)).json<Settings>();
-      expect(st.agent).toMatchObject({ status: 'draft', kind: 'constructor' });
+      expect(st.agent).toMatchObject({ status: 'draft', kind: 'custom', teamRole: 'worker' });
       expect(st.constructor!.activationProblems.join(' ')).toMatch(/поле/);
       expect(st.prompts.active!.label).toMatch(/^heshtegi@1#/);
 
@@ -613,14 +615,20 @@ describe('web panel API (Postgres)', () => {
       expect(cards.find((c) => c.id === id)!.registryStatus).toBe('active');
       expect(mirrored.map((m) => m.text).join('\n')).toMatch(/Хэштеги» включён/);
 
-      // Registry agents use the same controls (pause, model) as code agents.
+      // Every agent has the same controls; the planner is edited like any other.
       expect((await post(s, `/api/agents/${id}/pause`)).statusCode).toBe(200);
       expect((await post(s, `/api/agents/${id}/resume`)).statusCode).toBe(200);
-      expect((await post(s, '/api/agents/ceo/definition', { name: 'Шеф' })).statusCode).toBe(409);
-      expect((await post(s, '/api/agents/ceo/delete')).statusCode).toBe(409);
-      expect((await post(s, `/api/agents/${id}/delete`)).statusCode).toBe(409); // active
-      expect((await post(s, `/api/agents/${id}/deactivate`)).statusCode).toBe(200);
+      expect((await post(s, '/api/agents/ceo/definition', { name: 'CEO' })).statusCode).toBe(200);
+      // In the plan of an unfinished task: refused, with the task to open.
+      const refused = await post(s, '/api/agents/ceo/delete');
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json<{ message: string; taskId: string }>()).toMatchObject({
+        message: expect.stringMatching(/незавершённой задачи «/) as unknown,
+        taskId: expect.any(String) as unknown,
+      });
+      // An active agent is deleted (the panel asks to confirm), with a Telegram mirror.
       expect((await post(s, `/api/agents/${id}/delete`)).statusCode).toBe(200);
+      expect(mirrored.map((m) => m.text).join('\n')).toMatch(/В панели: Удалён агент «Хэштеги»/);
       expect((await get(s, `/api/agents/${id}/settings`)).statusCode).toBe(404);
       const audit = await t.db
         .select({ action: schema.auditLog.action })
@@ -635,7 +643,6 @@ describe('web panel API (Postgres)', () => {
           'agent_activated',
           'agent_paused',
           'agent_resumed',
-          'agent_deactivated',
           'agent_deleted',
         ]),
       );
@@ -762,9 +769,10 @@ describe('web panel API (Postgres)', () => {
         'me',
       ]);
       expect(ws.nodes.find((n) => n.id === 'ceo')!.card).not.toBeNull();
-      expect(ws.nodes.find((n) => n.id === 'seo')!.status).toBe('planned');
-      const sys = ws.links.find((l) => l.from === 'ceo')!;
-      expect(sys).toMatchObject({ kind: 'system', deletable: false, active: true });
+      expect(ws.nodes.find((n) => n.id === 'seo')!.status).toBe('draft');
+      // No system links: the old pipeline link is an ordinary one.
+      const main = ws.links.find((l) => l.from === 'ceo')!;
+      expect(main).toMatchObject({ deletable: true, active: true });
 
       mirrored.length = 0;
       const added = await post(s, '/api/workspace/links', { from: 'critic', to: 'seo' });
@@ -776,10 +784,9 @@ describe('web panel API (Postgres)', () => {
       expect((await post(s, '/api/workspace/links', { from: 'me', to: 'seo' })).statusCode).toBe(
         409,
       );
-      expect((await post(s, `/api/workspace/links/${sys.id}/delete`)).statusCode).toBe(409);
       const ws2 = (await get(s, '/api/workspace')).json<Ws>();
       const userLink = ws2.links.find((l) => l.from === 'critic' && l.to === 'seo')!;
-      expect(userLink).toMatchObject({ kind: 'user', active: false, deletable: true });
+      expect(userLink).toMatchObject({ active: false, deletable: true });
       expect((await post(s, `/api/workspace/links/${userLink.id}/delete`)).statusCode).toBe(200);
 
       expect(
@@ -791,7 +798,7 @@ describe('web panel API (Postgres)', () => {
       ).toBe(777);
       expect((await post(s, '/api/workspace/auto-layout')).statusCode).toBe(200);
       const texts = mirrored.map((m) => m.text).join('\n');
-      expect(texts).toMatch(/Связь Critic → SEO-менеджер добавлена/);
+      expect(texts).toMatch(/Связь Проверяющий → SEO-менеджер добавлена/);
       expect(texts).toMatch(/удалена/);
       expect(texts).toMatch(/расставлены/);
       expect(texts).not.toMatch(/Положение сохранено/);

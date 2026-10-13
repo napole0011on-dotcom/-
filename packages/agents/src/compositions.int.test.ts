@@ -25,7 +25,7 @@ import {
 } from './compositions.js';
 import { MockLlmTransport } from './mock-llm.js';
 import { activePrompt } from './prompt-store.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow } from './workflow.js';
 import { loadWorkspace } from './workspace.js';
 
@@ -45,6 +45,7 @@ describe('agents from blocks (Postgres)', () => {
       t.db,
       BrandProfile.parse({ slug: `k-${Math.random().toString(36).slice(2, 8)}`, name: 'Зерно' }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const config = { ...t.config, budget: budgetCtx().config, llm: llmConfig() };
     const llm = new LlmClient({
@@ -186,11 +187,11 @@ describe('agents from blocks (Postgres)', () => {
       expect((await s.audit(a)).length, a).toBeGreaterThan(0);
   });
 
-  it('code agents are not edited from blocks; invalid compositions are refused', async () => {
+  it('any agent can be built from blocks; invalid compositions are refused', async () => {
     const s = await setup();
     expect(
-      (await saveComposition(t.db, s.brand.id, 'copywriter', defaultComposition(), OWNER)).message,
-    ).toMatch(/описан в коде/);
+      (await saveComposition(t.db, s.brand.id, 'copywriter', defaultComposition(), OWNER)).ok,
+    ).toBe(true);
     const c = defaultComposition();
     c.links.push({ from: 'role', to: 'ghost' });
     expect((await saveComposition(t.db, s.brand.id, 'taglines', c, OWNER)).ok).toBe(false);

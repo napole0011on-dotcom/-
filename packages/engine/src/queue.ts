@@ -66,7 +66,12 @@ export interface RunDeps {
    * "step_failed:<runId>") instead of failing the whole task; the owner continues from it.
    * Returns the step name and the message buttons, or null for runs that fail the task.
    */
-  stopOnFailure?: (run: Run) => { step: string; buttons: NotifierButton[][] } | null;
+  stopOnFailure?: (
+    run: Run,
+  ) =>
+    | { step: string; buttons: NotifierButton[][] }
+    | null
+    | Promise<{ step: string; buttons: NotifierButton[][] } | null>;
 }
 
 /** Cap on Retry-After re-deliveries per run, so a permanently throttled run still ends in dead letter. */
@@ -246,7 +251,7 @@ export async function processDeadRun(deps: RunDeps, runId: string): Promise<void
 
 async function failTask(deps: RunDeps, run: Run, err: unknown, dead: boolean) {
   const info = errorToJson(err);
-  const stop = deps.stopOnFailure?.(run) ?? null;
+  const stop = (await deps.stopOnFailure?.(run)) ?? null;
   if (stop) {
     const paused = await pauseTask(deps.db, run.taskId, `step_failed:${run.id}`, SYSTEM);
     if (paused)

@@ -1,3 +1,4 @@
+import { PermanentError } from '@cms/core';
 import type { LlmConfig } from '@cms/core';
 import type { LlmClient } from '@cms/engine';
 import type { BrandRecord } from '../brand.js';
@@ -29,3 +30,29 @@ export interface AgentResult<T> {
 
 /** Owner text is trusted (it is the instruction). Agent outputs passed onward are wrapped as data. */
 export const json = (v: unknown) => JSON.stringify(v, null, 2);
+
+/** Which agent record a call runs as: its id selects the prompt, the model and the cost line. */
+export interface AgentSelf {
+  id: string;
+  name: string;
+}
+
+/** The agent's active prompt (every agent is the owner's record with its own prompt). */
+export function selfPrompt(ctx: AgentContext, self: AgentSelf) {
+  const p = ctx.prompts[self.id];
+  if (!p)
+    throw new PermanentError(
+      'prompt_missing',
+      `У агента «${self.name}» нет активного промпта: сохраните его в «Настроить» → «Промпт»`,
+    );
+  return p;
+}
+
+/** The agent's model: its panel override, else LLM_MODEL_<role> of its model role. */
+export function selfModel(
+  ctx: AgentContext,
+  self: AgentSelf,
+  fallback: keyof AgentContext['models'],
+): string {
+  return ctx.agentModels[self.id] ?? ctx.models[fallback];
+}

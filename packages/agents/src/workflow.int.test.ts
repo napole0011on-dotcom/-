@@ -22,7 +22,7 @@ import {
 } from '@cms/engine/testkit';
 import { upsertBrand, BrandProfile } from './brand.js';
 import { MockLlmTransport } from './mock-llm.js';
-import { RecordingChannel } from './testing.js';
+import { RecordingChannel, seedTestTeam } from './testing.js';
 import { Workflow, MAX_CRITIC_REVISIONS, type CopyContent } from './workflow.js';
 
 /** Mock LLM whose Critic rejects the first draft(s) of selected deliverables. */
@@ -85,6 +85,7 @@ describe('stage 2 scenario: brief -> plan -> approve -> copy+critic -> edit -> n
         bannedWords: ['дешёвый'],
       }),
     );
+    await seedTestTeam(t.db, brand.id);
     const channel = new RecordingChannel();
     const queue: string[] = [];
     const config = {
@@ -165,7 +166,7 @@ describe('stage 2 scenario: brief -> plan -> approve -> copy+critic -> edit -> n
     await s.drain();
     expect(await s.status(taskId)).toBe('awaiting_final_approval');
     const pkg = s.channel.packages[0]!;
-    expect(pkg.items.map((i) => [i.deliverable.id, i.version, i.critic.passed])).toEqual([
+    expect(pkg.items.map((i) => [i.deliverable.id, i.version, i.critic!.passed])).toEqual([
       ['post-1', 2, true],
       ['tg-1', 1, true],
     ]);
@@ -220,7 +221,7 @@ describe('stage 2 scenario: brief -> plan -> approve -> copy+critic -> edit -> n
     const copy = versions
       .filter((v) => v.slot === 'copy:post-1')
       .sort((a, b) => a.version - b.version);
-    expect(copy.map((v) => (v.content as CopyContent).critic.passed)).toEqual([false, true]);
+    expect(copy.map((v) => (v.content as CopyContent).critic!.passed)).toEqual([false, true]);
 
     // Audit trail of human decisions with versions.
     const audit = await t.db
@@ -273,7 +274,7 @@ describe('stage 2 scenario: brief -> plan -> approve -> copy+critic -> edit -> n
       criticRejected: true,
       criticRound: 3,
     });
-    expect(item.critic.passed).toBe(false);
+    expect(item.critic!.passed).toBe(false);
     expect(await s.status(taskId)).toBe('awaiting_final_approval');
   });
 

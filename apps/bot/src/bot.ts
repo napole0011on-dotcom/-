@@ -8,7 +8,10 @@ const NO_TASK = '00000000-0000-0000-0000-000000000000';
 
 /** What the bot can do; implemented by the Workflow + a few queries (an interface keeps the bot testable). */
 export interface BotActions {
-  submitBrief(text: string, actor: Actor): Promise<{ taskId: string }>;
+  submitBrief(
+    text: string,
+    actor: Actor,
+  ): Promise<{ taskId: string; planned: boolean; message: string }>;
   decidePlan(
     taskId: string,
     action: 'approve' | 'change' | 'cancel',
@@ -220,8 +223,12 @@ export function createBot(
       return ctx.reply(r.ok ? `➡️ ${r.message}` : `⚠️ ${r.message}`);
     }
     try {
-      const { taskId } = await actions.submitBrief(text, actor);
-      return ctx.reply(`Принял бриф. CEO готовит план (задача ${taskId.slice(0, 8)}).`);
+      const r = await actions.submitBrief(text, actor);
+      return ctx.reply(
+        r.planned
+          ? `Принял бриф. Планировщик готовит план (задача ${r.taskId.slice(0, 8)}).`
+          : `⏸ Принял бриф (задача ${r.taskId.slice(0, 8)}), но запустить не могу. ${r.message}`,
+      );
     } catch (err) {
       return ctx.reply(`⚠️ ${(err as Error).message}`);
     }

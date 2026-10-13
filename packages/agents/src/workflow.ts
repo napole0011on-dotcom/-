@@ -55,7 +55,6 @@ import { runCopywriter, type RewriteRequest } from './agents/copywriter.js';
 import { runCritic, type Verdict } from './agents/critic.js';
 import { getBrand } from './brand.js';
 import { invokeAgent } from './invocations.js';
-import { agentById } from './registry.js';
 import { AgentControls, makeRunGate } from './controls.js';
 import type { AgentResult } from './agents/context.js';
 import type { NodeItemView, OwnerChannel, PackageItemView } from './channel.js';
@@ -67,7 +66,9 @@ import {
   type ExportItem,
   type ExportNodeItem,
 } from './export.js';
-import { COPYWRITER, DEFAULT_PIPELINE, type Pipeline, type PipelineStep } from './graph.js';
+import { choosePlanner, type Pipeline, type PipelineStep } from './graph.js';
+import type { AgentSelf } from './agents/context.js';
+import type { CapabilityExecutor } from './executors.js';
 import {
   nodeSlot,
   nodeSlotPrefix,
@@ -78,13 +79,14 @@ import {
   type UpstreamResult,
 } from './nodes.js';
 import { constructorExecutor } from './constructor.js';
-import { constructorSpecOf, listAgents, resolveAgent } from './agent-registry.js';
 import {
-  REQUIRED_TARGETS,
-  ROUTER_PROMPT_VERSION,
-  runRouter,
-  type RouteDecision,
-} from './router.js';
+  agentsWithRole,
+  constructorSpecOf,
+  listAgents,
+  resolveAgent,
+  type AgentRef,
+} from './agent-registry.js';
+import { ROUTER_PROMPT_VERSION, runRouter, type RouteDecision } from './router.js';
 import { CeoPlan, type CopyItem, type Deliverable } from './schemas.js';
 import { currentPipeline, loadWorkspace } from './workspace.js';
 
@@ -92,18 +94,21 @@ import { currentPipeline, loadWorkspace } from './workspace.js';
 export const MAX_CRITIC_REVISIONS = 2;
 
 const { tasks, runs, routeDecisions } = schema;
-const ORCHESTRATOR: Actor = { kind: 'agent', id: 'ceo' };
+const ORCHESTRATOR: Actor = { kind: 'agent', id: 'orchestrator' };
 const SYSTEM: Actor = { kind: 'system', id: 'workflow' };
 
 export type RunInput =
   | { kind: 'plan'; ownerComment?: string | null }
-  | { kind: 'copy'; inputSig?: string }
+  /** The step of the agent with the «copywriting» capability (writes the copy:* slots). */
+  | { kind: 'copy'; inputSig?: string; reviewer?: string | null }
   | {
       kind: 'node';
       agent: string;
       inputSig: string;
-      /** The Critic reviews this step (then it also waits while the Critic is paused). */
+      /** Older runs: a reviewer checks this step. */
       reviewed?: boolean;
+      /** The reviewer that checks this step (the run also waits while it is paused). */
+      reviewer?: string | null;
       rework?: {
         baseArtifactId: string;
         ownerComment: string | null;
@@ -114,6 +119,7 @@ export type RunInput =
   | { kind: 'route'; agent: string; sig: string }
   | {
       kind: 'rework';
+      reviewer?: string | null;
       deliverableId: string;
       baseArtifactId: string;
       ownerComment: string | null;
@@ -136,7 +142,8 @@ export interface TaskAttachment {
 export interface CopyContent extends Record<string, unknown> {
   deliverable: Deliverable;
   item: CopyItem;
-  critic: Verdict;
+  /** The reviewer's verdict; null when the step goes without a reviewer. */
+  critic: Verdict | null;
   criticRound: number;
   criticRejected: boolean;
   ownerComment: string | null;
@@ -152,8 +159,10 @@ export interface WorkflowDeps {
   config: AppConfig;
   pricing: ModelPricing;
   logger: Logger;
-  /** Executors for graph steps other than the copywriter, by agent id (constructor, code, tool). */
+  /** Executors by agent id (tests); otherwise by the agent's capability or its fields. */
   executors?: Record<string, NodeExecutor>;
+  /** Step executors by capability (image_generate, kp_draft, kp_render, ...). */
+  capabilities?: Record<string, CapabilityExecutor>;
   /** Object storage with files of steps (images); copied into the export folder. */
   storage?: ObjectStorage;
   /** Speech recognition for voice/video tool steps. */
@@ -214,7 +223,7 @@ export class Workflow {
     text: string,
     actor: Actor,
     opts: { attachments?: TaskAttachment[] } = {},
-  ): Promise<{ taskId: string }> {
+  ): Promise<{ taskId: string; planned: boolean; message: string }> {
     const brief = text.trim();
     if (brief.length < 10)
       throw new PermanentError(
@@ -232,8 +241,48 @@ export class Workflow {
       budgetUsd: this.d.config.budget.taskUsd,
       actor,
     });
-    await this.startRun(brandId, id, 'ceo', `task:${id}:plan:v1`, { kind: 'plan' });
-    return { taskId: id };
+    return { taskId: id, ...(await this.startPlanning(brandId, id)) };
+  }
+
+  /**
+   * Why a new task cannot be planned now (no planner, several, a draft one), or null. The
+   * planner is the agent with role «Планировщик» linked from «Бриф», or the only active one.
+   */
+  async planningProblem(brandId: string): Promise<string | null> {
+    const ws = await loadWorkspace(this.d.db, brandId);
+    return choosePlanner(ws.nodes, ws.links).problem ?? null;
+  }
+
+  /** Hands the task to the planner; without one the task stays in «приём» and says why. */
+  private async startPlanning(brandId: string, taskId: string) {
+    const ws = await loadWorkspace(this.d.db, brandId);
+    const pick = choosePlanner(ws.nodes, ws.links);
+    if (!pick.id) {
+      await emitEvent(this.d.db, {
+        brandId,
+        agent: 'brief',
+        taskId,
+        kind: 'wait',
+        text: `Задача ждёт планировщика: ${pick.problem}`,
+      });
+      await this.once(`task:${taskId}:no-planner`, () =>
+        this.d.channel
+          .send({ text: `⏸ Задача принята, но не запущена. ${pick.problem}` })
+          .then(() => undefined),
+      );
+      return { planned: false, message: pick.problem! };
+    }
+    await this.startRun(brandId, taskId, pick.id, `task:${taskId}:plan:v1`, { kind: 'plan' });
+    return { planned: true, message: 'Задача принята: планировщик составляет план' };
+  }
+
+  /** «Запустить планирование»: a task that waited for a planner, once there is one. */
+  async retryPlanning(taskId: string, actor: Actor): Promise<DecisionResult> {
+    if (actor.kind !== 'human') return { ok: false, message: 'Запустить может только владелец' };
+    const task = await this.task(taskId);
+    if (task.status !== 'draft') return { ok: false, message: 'Задача уже запланирована' };
+    const r = await this.startPlanning(task.brandId, taskId);
+    return { ok: r.planned, message: r.message };
   }
 
   async decidePlan(
@@ -290,11 +339,23 @@ export class Workflow {
         reason: 'plan change requested',
         details: { comment },
       });
-      await this.startRun(task.brandId, taskId, 'ceo', `task:${taskId}:plan:v${plan.version + 1}`, {
-        kind: 'plan',
-        ownerComment: comment ?? null,
-      });
-      return { ok: true, message: 'CEO переделывает план по вашему комментарию' };
+      // The planner that made the plan; if it was deleted, the one chosen for new tasks.
+      const ws = await loadWorkspace(this.d.db, task.brandId);
+      const pick = choosePlanner(ws.nodes, ws.links);
+      const planner =
+        plan.agent && ws.nodes.some((n) => n.id === plan.agent) ? plan.agent : (pick.id ?? null);
+      if (!planner) return { ok: false, message: `Переделать план некому: ${pick.problem}` };
+      await this.startRun(
+        task.brandId,
+        taskId,
+        planner,
+        `task:${taskId}:plan:v${plan.version + 1}`,
+        {
+          kind: 'plan',
+          ownerComment: comment ?? null,
+        },
+      );
+      return { ok: true, message: 'Планировщик переделывает план по вашему комментарию' };
     }
     await transitionTask(this.d.db, {
       taskId,
@@ -363,8 +424,10 @@ export class Workflow {
         kind: 'node',
         agent: nc.agent,
         inputSig: nc.inputSig,
-        reviewed: (await this.pipelineOf(task.id)).steps.find((x) => x.agent === nc.agent)
-          ?.reviewed,
+        reviewer: await this.reviewerOf(
+          task,
+          (await this.pipelineOf(task.id)).steps.find((x) => x.agent === nc.agent),
+        ),
         rework: {
           baseArtifactId: artifact.id,
           ownerComment: opts.comment ?? null,
@@ -374,8 +437,10 @@ export class Workflow {
       return { ok: true, message: action === 'revise' ? 'Отправил на правку' : 'Делаю заново' };
     }
     const content = artifact.content as CopyContent;
-    await this.startRun(task.brandId, task.id, 'copywriter', `rework:${artifact.id}`, {
+    const copyStep = (await this.pipelineOf(task.id)).steps.find((x) => x.agent === artifact.agent);
+    await this.startRun(task.brandId, task.id, artifact.agent, `rework:${artifact.id}`, {
       kind: 'rework',
+      reviewer: await this.reviewerOf(task, copyStep),
       deliverableId: content.deliverable.id,
       baseArtifactId: artifact.id,
       ownerComment: opts.comment ?? null,
@@ -543,11 +608,11 @@ export class Workflow {
    * Queue hook: a failed step of an approved plan stops the task on that step instead of
    * failing it (the plan and the export keep the old behaviour).
    */
-  readonly stopOnFailure = (run: Run) => {
+  readonly stopOnFailure = async (run: Run) => {
     const i = run.input as RunInput;
     if (!['copy', 'rework', 'node', 'route'].includes(i.kind)) return null;
-    const agent = 'agent' in i ? i.agent : 'copywriter';
-    const name = agentById(agent)?.name ?? agent;
+    const agent = 'agent' in i ? i.agent : run.agent;
+    const name = (await resolveAgent(this.d.db, run.brandId, agent))?.name ?? agent;
     return {
       step: i.kind === 'route' ? `${name} · диспетчер` : name,
       buttons: [[{ text: '▶️ Продолжить с этого шага', data: cb.task('rs', run.taskId) }]],
@@ -773,21 +838,26 @@ export class Workflow {
     const previous = await latestArtifact(this.d.db, task.id, 'plan');
     // The plan carries a snapshot of the board: approving the plan freezes the steps for this task.
     const sources = [...new Set(this.attachmentsOf(task).map((a) => MEDIA_TOOL[a.media]))];
-    const pipeline = await currentPipeline(this.d.db, task.brandId, sources);
+    const pipeline = await currentPipeline(this.d.db, task.brandId, sources, run.agent);
+    const self = await this.self(task, run.agent);
     const attachments = await this.attachmentTexts(task);
     const ws = await loadWorkspace(this.d.db, task.brandId);
     const team = pipeline.steps.map((s) => {
       const n = ws.nodes.find((x) => x.id === s.agent);
       return { name: s.name, role: n?.role ?? '' };
     });
-    const result = await this.invoke('ceo', run, task, ctx, () =>
-      runCeo(ctx, {
-        brief: briefText(task),
-        team,
-        ...(attachments.length ? { attachments } : {}),
-        ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
-        ...(ownerComment ? { ownerComment } : {}),
-      }),
+    const result = await this.invoke(run.agent, run, task, ctx, () =>
+      runCeo(
+        ctx,
+        {
+          brief: briefText(task),
+          team,
+          ...(attachments.length ? { attachments } : {}),
+          ...(previous ? { previousPlan: CeoPlan.parse(previous.content) } : {}),
+          ...(ownerComment ? { ownerComment } : {}),
+        },
+        self,
+      ),
     );
     const artifact = await createArtifactVersion(this.d.db, `${run.id}:plan`, {
       brandId: task.brandId,
@@ -796,7 +866,7 @@ export class Workflow {
       slot: 'plan',
       kind: 'plan',
       content: { ...result.output, pipeline },
-      agent: 'ceo',
+      agent: run.agent,
       promptVersion: result.promptVersion,
       model: result.model,
     });
@@ -820,20 +890,27 @@ export class Workflow {
     );
     await emitEvent(this.d.db, {
       brandId: task.brandId,
-      agent: 'ceo',
+      agent: run.agent,
       taskId: task.id,
       runId: run.id,
       kind: 'plan_ready',
-      text: `CEO · план v${artifact.version} готов, ждёт вас`,
+      text: `${self.name} · план v${artifact.version} готов, ждёт вас`,
       costUsd: result.costUsd,
     });
     return { planArtifactId: artifact.id, version: artifact.version, costUsd: result.costUsd };
   }
 
-  private async copyStep(run: Run, task: TaskRow, ctx: AgentContext, input: { inputSig?: string }) {
+  private async copyStep(
+    run: Run,
+    task: TaskRow,
+    ctx: AgentContext,
+    input: Extract<RunInput, { kind: 'copy' }>,
+  ) {
     const plan = await this.plan(task.id);
-    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === COPYWRITER);
+    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === run.agent);
     const upstream = step ? await this.upstreamOf(task.id, step) : [];
+    const reviewer =
+      input.reviewer === undefined ? await this.reviewerOf(task, step) : input.reviewer;
     const created = await this.writeAndReview(
       run,
       task,
@@ -844,6 +921,7 @@ export class Workflow {
       {
         inputSig: input.inputSig ?? 'root',
         upstream,
+        reviewer,
       },
     );
     await this.advance(task.id, run);
@@ -862,7 +940,9 @@ export class Workflow {
     if (!base || !deliverable)
       throw new PermanentError('rework_target_missing', 'Rework target not found');
     const content = base.content as CopyContent;
-    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === COPYWRITER);
+    const step = (await this.pipelineOf(task.id)).steps.find((s) => s.agent === run.agent);
+    const reviewer =
+      input.reviewer === undefined ? await this.reviewerOf(task, step) : input.reviewer;
     const created = await this.writeAndReview(
       run,
       task,
@@ -879,6 +959,7 @@ export class Workflow {
       {
         inputSig: content.inputSig ?? 'root',
         upstream: step ? await this.upstreamOf(task.id, step) : [],
+        reviewer,
       },
     );
     await this.advance(task.id, run);
@@ -886,9 +967,10 @@ export class Workflow {
   }
 
   /**
-   * Copywriter -> Critic loop. Every draft becomes an artifact version together with the
-   * Critic verdict on it. Failed items go back to the copywriter with the Critic's issues
-   * (and the owner's comment, if any) at most MAX_CRITIC_REVISIONS times.
+   * Writer -> reviewer loop (the agent with «copywriting» and the agent with role «Проверяющий»
+   * linked to it). Every draft becomes an artifact version together with the verdict on it.
+   * Failed items go back to the writer with the reviewer's issues (and the owner's comment, if
+   * any) at most MAX_CRITIC_REVISIONS times. Without a reviewer the texts go as written.
    */
   private async writeAndReview(
     run: Run,
@@ -897,8 +979,10 @@ export class Workflow {
     plan: CeoPlan,
     deliverables: Deliverable[],
     initial: Record<string, RewriteRequest>,
-    from: { inputSig: string; upstream: UpstreamResult[] },
+    from: { inputSig: string; upstream: UpstreamResult[]; reviewer: string | null },
   ): Promise<Artifact[]> {
+    const writer = await this.self(task, run.agent);
+    const reviewer = from.reviewer ? await this.self(task, from.reviewer) : null;
     const finals: Artifact[] = [];
     let pending = deliverables;
     let rewrites = initial;
@@ -908,31 +992,41 @@ export class Workflow {
 
     for (let round = 0; round <= MAX_CRITIC_REVISIONS && pending.length > 0; round++) {
       if (round > 0) await this.moveTo(task.id, 'revision');
-      const copy = await this.invoke('copywriter', run, task, ctx, () =>
-        runCopywriter(ctx, {
-          brief: briefText(task),
-          planSummary: plan.summary,
-          deliverables: pending,
-          rewrites,
-          upstream: from.upstream,
-          step: `r${round}`,
-        }),
+      const copy = await this.invoke(writer.id, run, task, ctx, () =>
+        runCopywriter(
+          ctx,
+          {
+            brief: briefText(task),
+            planSummary: plan.summary,
+            deliverables: pending,
+            rewrites,
+            upstream: from.upstream,
+            step: `r${round}`,
+          },
+          writer,
+        ),
       );
       await this.moveTo(task.id, 'in_review');
-      const review = await this.invoke('critic', run, task, ctx, () =>
-        runCritic(ctx, {
-          brief: briefText(task),
-          deliverables: pending,
-          items: copy.output.items,
-          step: `r${round}`,
-        }),
-      );
+      const review = reviewer
+        ? await this.invoke(reviewer.id, run, task, ctx, () =>
+            runCritic(
+              ctx,
+              {
+                brief: briefText(task),
+                deliverables: pending,
+                items: copy.output.items,
+                step: `r${round}`,
+              },
+              reviewer,
+            ),
+          )
+        : null;
 
       const failed: Deliverable[] = [];
       const nextRewrites: Record<string, RewriteRequest> = {};
       for (const d of pending) {
         const item = copy.output.items.find((i) => i.deliverableId === d.id)!;
-        const verdict = review.output.find((v) => v.deliverableId === d.id)!;
+        const verdict = review?.output.find((v) => v.deliverableId === d.id) ?? null;
         const last = round === MAX_CRITIC_REVISIONS;
         const artifact = await createArtifactVersion(this.d.db, `${run.id}:r${round}:${d.id}`, {
           brandId: task.brandId,
@@ -945,15 +1039,17 @@ export class Workflow {
             item,
             critic: verdict,
             criticRound: round + 1,
-            criticRejected: !verdict.passed && last,
+            criticRejected: !!verdict && !verdict.passed && last,
             ownerComment: ownerComments[d.id] ?? null,
             inputSig: from.inputSig,
           } satisfies CopyContent,
-          agent: 'copywriter',
-          promptVersion: `${copy.promptVersion}+${review.promptVersion}`,
+          agent: writer.id,
+          promptVersion: review
+            ? `${copy.promptVersion}+${review.promptVersion}`
+            : copy.promptVersion,
           model: copy.model,
         });
-        if (verdict.passed || last) finals.push(artifact);
+        if (!verdict || verdict.passed || last) finals.push(artifact);
         else {
           failed.push(d);
           nextRewrites[d.id] = {
@@ -964,34 +1060,94 @@ export class Workflow {
           };
         }
       }
-      const passedN = pending.length - failed.length;
-      await emitEvent(this.d.db, {
-        brandId: task.brandId,
-        agent: 'critic',
-        taskId: task.id,
-        runId: run.id,
-        kind: 'verdict',
-        text:
-          failed.length === 0
-            ? `Critic · вердикт: принято (${passedN})`
-            : `Critic · вердикт: доработать ${failed.length}${passedN ? `, принято ${passedN}` : ''}`,
-        costUsd: review.costUsd,
-      });
+      if (review && reviewer) {
+        const passedN = pending.length - failed.length;
+        await emitEvent(this.d.db, {
+          brandId: task.brandId,
+          agent: reviewer.id,
+          taskId: task.id,
+          runId: run.id,
+          kind: 'verdict',
+          text:
+            failed.length === 0
+              ? `${reviewer.name} · вердикт: принято (${passedN})`
+              : `${reviewer.name} · вердикт: доработать ${failed.length}${passedN ? `, принято ${passedN}` : ''}`,
+          costUsd: review.costUsd,
+        });
+      }
       pending = failed;
       rewrites = nextRewrites;
     }
-    // Show items to the owner in plan order, not in the order the Critic passed them.
+    // Show items to the owner in plan order, not in the order the reviewer passed them.
     const order = deliverables.map((d) => `copy:${d.id}`);
     return finals.sort((a, b) => order.indexOf(a.slot) - order.indexOf(b.slot));
   }
 
   // ---------------------------------------------------------------- graph execution
 
-  /** Steps of this task: the board snapshot stored in the plan (old plans: copywriter only). */
+  /**
+   * Steps of this task: the board snapshot stored in the plan. Plans made before the board
+   * existed have none: the texts are written by the agent with «copywriting», checked by the
+   * reviewer it is linked to.
+   */
   private async pipelineOf(taskId: string): Promise<Pipeline> {
     const a = await latestArtifact(this.d.db, taskId, 'plan');
     const p = (a?.content as { pipeline?: Pipeline } | undefined)?.pipeline;
-    return p?.steps?.length ? p : DEFAULT_PIPELINE;
+    if (p?.steps?.length) return p;
+    const task = await this.task(taskId);
+    const ws = await loadWorkspace(this.d.db, task.brandId);
+    const writer = ws.nodes.find((n) => n.capability === 'copywriting' && n.status === 'active');
+    return {
+      steps: writer
+        ? [
+            {
+              agent: writer.id,
+              name: writer.name,
+              after: [],
+              reviewed: true,
+              capability: 'copywriting',
+            },
+          ]
+        : [],
+      inactive: [],
+      links: ws.links.map((l) => ({ from: l.from, to: l.to })),
+    };
+  }
+
+  /** The agent record a call runs as (deleted agents keep their name for the history). */
+  private async self(task: TaskRow, agentId: string): Promise<AgentSelf> {
+    const ref = await resolveAgent(this.d.db, task.brandId, agentId);
+    if (!ref)
+      throw new PermanentError('agent_missing', `Агента «${agentId}» нет на доске (удалён?)`);
+    return { id: ref.id, name: ref.name };
+  }
+
+  /**
+   * Who reviews a step: the reviewer stored in the plan; plans made before stage 7 only say
+   * «reviewed» — then the active agent with role «Проверяющий» linked to the step (or the only one).
+   */
+  private async reviewerOf(task: TaskRow, step: PipelineStep | undefined): Promise<string | null> {
+    if (!step) return null;
+    if (step.reviewer !== undefined) return step.reviewer;
+    if (!step.reviewed) return null;
+    const reviewers = (await agentsWithRole(this.d.db, task.brandId, 'reviewer')).filter(
+      (r) => r.status === 'active',
+    );
+    const ws = await loadWorkspace(this.d.db, task.brandId);
+    const linked = reviewers.filter((r) =>
+      ws.links.some((l) => l.from === step.agent && l.to === r.id),
+    );
+    return (
+      (linked.length === 1 ? linked[0] : reviewers.length === 1 ? reviewers[0] : null)?.id ?? null
+    );
+  }
+
+  /** The step runs the «copywriting» capability (the copy:* slots). */
+  private async isCopyStep(taskId: string, agent: string): Promise<boolean> {
+    const step = (await this.pipelineOf(taskId)).steps.find((s) => s.agent === agent);
+    if (step?.capability !== undefined) return step.capability === 'copywriting';
+    const task = await this.task(taskId);
+    return (await resolveAgent(this.d.db, task.brandId, agent))?.capability === 'copywriting';
   }
 
   private async nodeArtifacts(taskId: string): Promise<Artifact[]> {
@@ -1007,7 +1163,7 @@ export class Workflow {
   }
 
   private async stepArtifacts(taskId: string, agent: string): Promise<Artifact[]> {
-    return agent === COPYWRITER
+    return (await this.isCopyStep(taskId, agent))
       ? latestArtifacts(this.d.db, taskId, 'copy:')
       : latestArtifacts(this.d.db, taskId, nodeSlotPrefix(agent));
   }
@@ -1034,29 +1190,32 @@ export class Workflow {
     if (this.attachmentsOf(task).length) {
       const pipe = await this.pipelineOf(taskId);
       const consumed = new Set(pipe.steps.flatMap((x) => x.inputs ?? []));
+      // The source agent of an attachment: by its capability (older plans used the capability id).
+      const sourceOf = (media: MediaKind) =>
+        pipe.sources?.find((x) => x.capability === MEDIA_TOOL[media])?.agent ?? MEDIA_TOOL[media];
       const texts = await this.attachmentTexts(task, (a) => {
-        const src = MEDIA_TOOL[a.media];
+        const src = sourceOf(a.media);
         return consumed.has(src) ? (step.inputs ?? []).includes(src) : step.after.length === 0;
       });
       for (const t of texts)
         out.push({
-          agent: MEDIA_TOOL[t.media],
+          agent: sourceOf(t.media),
           name: t.media === 'voice' ? 'Расшифровка голосового' : 'Расшифровка видео',
           items: [{ file: t.name, text: t.text }],
         });
     }
     for (const dep of await this.forwardingDeps(taskId, step)) {
       const arts = await this.stepArtifacts(taskId, dep);
-      if (dep === COPYWRITER) {
+      if (await this.isCopyStep(taskId, dep)) {
         out.push({
           agent: dep,
-          name: 'Копирайтер',
+          name: (await this.pipelineOf(taskId)).steps.find((x) => x.agent === dep)?.name ?? dep,
           items: arts.map((a) => {
             const c = a.content as CopyContent;
             return {
               deliverable: c.deliverable,
               variants: c.item.variants,
-              critic: c.critic.summary,
+              ...(c.critic ? { critic: c.critic.summary } : {}),
             };
           }),
         });
@@ -1075,14 +1234,14 @@ export class Workflow {
   /** Which step each queued/running run of the task belongs to (except the current one). */
   private async activeSteps(taskId: string, exceptRunId: string | null): Promise<Set<string>> {
     const rows = await this.d.db
-      .select({ id: runs.id, input: runs.input })
+      .select({ id: runs.id, input: runs.input, agent: runs.agent })
       .from(runs)
       .where(sql`${runs.taskId} = ${taskId} and ${runs.status} in ('queued', 'running')`);
     const out = new Set<string>();
     for (const r of rows) {
       if (r.id === exceptRunId) continue;
       const i = r.input as RunInput;
-      if (i.kind === 'copy' || i.kind === 'rework') out.add(COPYWRITER);
+      if (i.kind === 'copy' || i.kind === 'rework') out.add(r.agent);
       else if (i.kind === 'node') out.add(i.agent);
       else if (i.kind === 'route') out.add(`route:${i.agent}`);
     }
@@ -1136,13 +1295,14 @@ export class Workflow {
         continue;
       }
       if (!fresh) {
-        if (step.agent === COPYWRITER) {
+        const reviewer = await this.reviewerOf(task, step);
+        if (await this.isCopyStep(taskId, step.agent)) {
           await this.startRun(
             task.brandId,
             taskId,
-            COPYWRITER,
+            step.agent,
             `task:${taskId}:copy:plan-v${planArt?.version ?? 1}${sig === 'root' ? '' : `:${sig}`}`,
-            { kind: 'copy', inputSig: sig },
+            { kind: 'copy', inputSig: sig, reviewer },
           );
         } else {
           await this.startRun(
@@ -1154,7 +1314,8 @@ export class Workflow {
               kind: 'node',
               agent: step.agent,
               inputSig: sig,
-              reviewed: step.reviewed,
+              reviewed: reviewer !== null,
+              reviewer,
             },
           );
         }
@@ -1444,10 +1605,13 @@ export class Workflow {
       ? Object.fromEntries(next.map((s) => [s.agent, 'диспетчер не смог выбрать — по связям']))
       : Object.fromEntries(out.targets.map((t) => [t.agent, t.reason]));
     // SEO cannot be bypassed on the way to the owner.
-    for (const req of REQUIRED_TARGETS) {
-      if (!needHelp && next.some((s) => s.agent === req) && !targets.includes(req)) {
-        targets.push(req);
-        reasons[req] = 'SEO обязателен перед согласованием';
+    // An acceptor (role «Приёмка», e.g. SEO) linked after this step cannot be bypassed.
+    for (const req of next.filter(
+      (x) => refs.find((r) => r.id === x.agent)?.teamRole === 'acceptor',
+    )) {
+      if (!needHelp && !targets.includes(req.agent)) {
+        targets.push(req.agent);
+        reasons[req.agent] = `«${req.name}» (приёмка) обязательна перед согласованием`;
       }
     }
     const row = await this.saveDecision(task, pipe, {
@@ -1631,6 +1795,13 @@ export class Workflow {
       this.d.executors?.[input.agent] ?? (await this.registryExecutor(task, input.agent));
     if (!exec)
       throw new PermanentError('no_executor', `Агент ${step.name} пока не умеет выполнять шаги`);
+    const reviewerId =
+      input.reviewer !== undefined
+        ? input.reviewer
+        : input.reviewed
+          ? await this.reviewerOf(task, step)
+          : null;
+    const reviewer = reviewerId && exec.review ? await this.self(task, reviewerId) : null;
     const plan = await this.plan(task.id);
     const base = input.rework ? await getArtifact(this.d.db, input.rework.baseArtifactId) : null;
     const baseContent = base?.content as NodeContent | undefined;
@@ -1648,12 +1819,11 @@ export class Workflow {
     for (let round = 0; round <= MAX_CRITIC_REVISIONS; round++) {
       nodeInput = { ...nodeInput, step: `r${round}` };
       const res = await this.invoke(input.agent, run, task, ctx, () => exec.run(ctx, nodeInput));
-      const review =
-        step.reviewed && exec.review
-          ? await this.invoke('critic', run, task, ctx, () =>
-              exec.review!(ctx, nodeInput, res.output),
-            )
-          : null;
+      const review = reviewer
+        ? await this.invoke(reviewer.id, run, task, ctx, () =>
+            exec.review!(ctx, nodeInput, res.output, reviewer),
+          )
+        : null;
       const last = round === MAX_CRITIC_REVISIONS;
       const verdict = review?.output ?? null;
       artifact = await createArtifactVersion(this.d.db, `${run.id}:r${round}:${input.agent}`, {
@@ -1684,14 +1854,14 @@ export class Workflow {
         promptVersion: review ? `${res.promptVersion}+${review.promptVersion}` : res.promptVersion,
         model: res.model,
       });
-      if (verdict) {
+      if (verdict && reviewer) {
         await emitEvent(this.d.db, {
           brandId: task.brandId,
-          agent: 'critic',
+          agent: reviewer.id,
           taskId: task.id,
           runId: run.id,
           kind: 'verdict',
-          text: `Critic · ${step.name}: ${verdict.passed ? 'принято' : 'доработать'}`,
+          text: `${reviewer.name} · ${step.name}: ${verdict.passed ? 'принято' : 'доработать'}`,
           costUsd: review!.costUsd,
         });
       }
@@ -1835,12 +2005,19 @@ export class Workflow {
   }
 
   /** Constructor agents run from their registry row (fields, criteria) and prompt. */
+  /** A step runs by the agent's capability (code), or as an LLM agent by its fields. */
   private async registryExecutor(task: TaskRow, agentId: string): Promise<NodeExecutor | null> {
     const ref = await resolveAgent(this.d.db, task.brandId, agentId);
-    if (!ref || ref.kind !== 'constructor') return null;
+    if (!ref) return null;
+    if (ref.capability) return this.capabilityExecutor(ref);
     const { spec } = constructorSpecOf(ref);
     if (!spec) return null;
     return constructorExecutor({ id: ref.id, name: ref.name, role: ref.role, spec });
+  }
+
+  private capabilityExecutor(ref: AgentRef): NodeExecutor | null {
+    const make = ref.capability ? this.d.capabilities?.[ref.capability] : undefined;
+    return make ? make({ id: ref.id, name: ref.name }) : null;
   }
 
   /** Every agent call goes through the registry + invocation log (code and board agents). */
@@ -1851,24 +2028,19 @@ export class Workflow {
     ctx: AgentContext,
     fn: () => Promise<AgentResult<T>>,
   ) {
-    const code = agentById(agentId);
-    const node = code
-      ? null
-      : (await loadWorkspace(this.d.db, task.brandId)).nodes.find((n) => n.id === agentId);
-    if (!code && !node)
-      throw new PermanentError('unknown_agent', `Agent ${agentId} is not in the registry`);
-    const role = (code?.modelRole ?? node?.modelRole ?? null) as
-      keyof AgentContext['models'] | null;
-    const prompt = ctx.prompts[code?.prompt ?? agentId];
+    const node = (await loadWorkspace(this.d.db, task.brandId)).nodes.find((n) => n.id === agentId);
+    if (!node) throw new PermanentError('unknown_agent', `Агента «${agentId}» нет на доске`);
+    const role = node.modelRole as keyof AgentContext['models'] | null;
+    const prompt = ctx.prompts[agentId];
     return invokeAgent(
       this.d.db,
-      { id: agentId, name: code?.name ?? node!.name },
+      { id: agentId, name: node.name },
       {
         brandId: task.brandId,
         taskId: task.id,
         runId: run.id,
         model: ctx.agentModels[agentId] ?? (role ? ctx.models[role] : 'tool'),
-        promptVersion: prompt?.version ?? `${agentId}@code`,
+        promptVersion: prompt?.version ?? `${agentId}@tool`,
       },
       fn,
     );

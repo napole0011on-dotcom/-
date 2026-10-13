@@ -55,11 +55,15 @@ export function renderPlan(v: PlanView): string[] {
       '<b>Кто и в каком порядке</b> (по связям на доске):',
       ...v.pipeline.steps.map(
         (s, i) =>
-          `${i + 1}. ${esc(s.name)}${s.after.length ? ` — после: ${s.after.map((a) => esc(v.pipeline.steps.find((x) => x.agent === a)?.name ?? a)).join(', ')}` : ''}${s.reviewed ? ' · проверка Critic' : ''}`,
+          `${i + 1}. ${esc(s.name)}${s.after.length ? ` — после: ${s.after.map((a) => esc(v.pipeline.steps.find((x) => x.agent === a)?.name ?? a)).join(', ')}` : ''}${s.reviewed ? ' · с проверкой' : ' · без проверки'}`,
       ),
       `${v.pipeline.steps.length + 1}. Вы — согласование итогового пакета`,
     ].join('\n'),
   ];
+  if (v.pipeline.warnings?.length)
+    blocks.push(
+      ['<b>Решите сами:</b>', ...v.pipeline.warnings.map((w) => `• ${esc(w)}`)].join('\n'),
+    );
   if (v.pipeline.inactive.length)
     blocks.push(
       [
@@ -94,16 +98,20 @@ export function renderPackageHeader(v: PackageView): string {
 
 export function renderItem(it: PackageItemView): string[] {
   const c = it.critic;
-  const verdict = c.passed
-    ? `✅ Critic одобрил (раунд ${it.criticRound})`
-    : it.criticRejected
-      ? `⚠️ <b>Critic НЕ одобрил</b> после 2 доработок`
-      : `⚠️ Critic: есть замечания`;
+  const verdict = !c
+    ? 'Без проверки (на доске нет проверяющего)'
+    : c.passed
+      ? `✅ Проверяющий одобрил (раунд ${it.criticRound})`
+      : it.criticRejected
+        ? `⚠️ <b>Проверяющий НЕ одобрил</b> после 2 доработок`
+        : `⚠️ Проверяющий: есть замечания`;
   const blocks = [
     `<b>${esc(it.deliverable.id)} · ${PLATFORM_LABEL[it.deliverable.platform]}</b> — версия ${it.version}\nТема: ${esc(it.deliverable.topic)}`,
-    `${verdict}. ${esc(c.summary)}\n${CHECK_NAMES.map((k) => `${c.checks[k].ok ? '✓' : '✗'} ${CHECK_LABEL[k]}`).join(' · ')}`,
+    c
+      ? `${verdict}. ${esc(c.summary)}\n${CHECK_NAMES.map((k) => `${c.checks[k].ok ? '✓' : '✗'} ${CHECK_LABEL[k]}`).join(' · ')}`
+      : verdict,
   ];
-  if (!c.passed && c.issues.length) {
+  if (c && !c.passed && c.issues.length) {
     blocks.push(
       [
         'Замечания:',
@@ -141,10 +149,10 @@ export function renderNodeItem(it: NodeItemView): string[] {
   const verdict = !it.critic
     ? ''
     : it.critic.passed
-      ? '✅ Critic одобрил'
+      ? '✅ Проверяющий одобрил'
       : it.criticRejected
-        ? '⚠️ <b>Critic НЕ одобрил</b> после 2 доработок'
-        : '⚠️ Critic: есть замечания';
+        ? '⚠️ <b>Проверяющий НЕ одобрил</b> после 2 доработок'
+        : '⚠️ Проверяющий: есть замечания';
   const blocks = [
     `<b>${esc(it.agentName)}</b> — ${esc(it.title)} (версия ${it.version})`,
     ...(verdict ? [`${verdict}. ${esc(it.critic!.summary)}`] : []),

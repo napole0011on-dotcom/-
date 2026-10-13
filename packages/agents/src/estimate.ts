@@ -52,9 +52,9 @@ export function estimatePlan(
     maxUsd: r2(first + 2 * round(n)),
     expectedMinutes: Math.ceil(1 + n * 0.7),
     steps: [
-      { agent: 'copywriter', what: `тексты: ${n} шт., по 3 варианта` },
-      { agent: 'critic', what: 'проверка каждого текста, до 2 доработок' },
-      { agent: 'ceo', what: 'сборка пакета и отправка вам на согласование' },
+      { agent: 'texts', what: `тексты: ${n} шт., по 3 варианта` },
+      { agent: 'review', what: 'проверка каждого текста, до 2 доработок' },
+      { agent: 'package', what: 'сборка пакета и отправка вам на согласование' },
     ],
   };
 }
