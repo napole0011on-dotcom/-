@@ -5,7 +5,7 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   planned: 'план готовится',
   awaiting_plan_approval: 'ждёт утверждения плана',
   in_progress: 'в работе',
-  in_review: 'проверка Critic',
+  in_review: 'на проверке',
   revision: 'доработка',
   awaiting_final_approval: 'ждёт вашего согласования',
   approved: 'утверждено',
@@ -119,9 +119,9 @@ export function actorLabel(actor: string): string {
 }
 
 export const ROLE_LABEL: Record<string, string> = {
-  ceo: 'CEO',
-  worker: 'Копирайтер',
-  critic: 'Critic',
+  ceo: 'сильная модель',
+  worker: 'обычная модель',
+  critic: 'модель проверки',
   classifier: 'классификатор',
 };
 

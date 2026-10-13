@@ -19,7 +19,7 @@ export async function openPanel({ width = 1440, height = 900 } = {}) {
   await page.goto(URL_BASE + '/');
   await page.getByLabel('Пароль').fill(process.env.E2E_PASSWORD);
   await page.getByRole('button', { name: 'Войти' }).click();
-  await page.locator('.react-flow__node[data-id="ceo"]').waitFor();
+  await page.locator('.react-flow__node[data-id="brief"]').waitFor();
   await page.waitForTimeout(800);
   return { browser, page, errors };
 }
@@ -61,4 +61,77 @@ export async function dropLink(page, from, to) {
 export function assert(cond, msg) {
   if (!cond) throw new Error(`FAIL: ${msg}`);
   console.log(`✔ ${msg}`);
+}
+
+/** A panel API call from the page (session cookie + CSRF), for test setup and checks. */
+export const api = (page, url, body) =>
+  page.evaluate(
+    async ([u, b]) => {
+      const s = await (await fetch('/api/session')).json();
+      const r = await fetch(u, {
+        method: b ? 'POST' : 'GET',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': s.csrfToken },
+        ...(b ? { body: JSON.stringify(b) } : {}),
+      });
+      return r.json();
+    },
+    [url, body],
+  );
+
+/** Waits until the task reaches the status (the worker runs it on the mock model). */
+export async function waitTask(page, id, status, timeout = 60_000) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const t = await api(page, `/api/tasks/${id}`);
+    if (t.task?.status === status) return t;
+    if (Date.now() > until) throw new Error(`FAIL: task is ${t.task?.status}, not ${status}`);
+    await page.waitForTimeout(700);
+  }
+}
+
+/**
+ * The agents a test needs, from the library (stage 7: there are no built-in agents). An agent
+ * with the template's name is reused; `activate` runs the mock test and switches it on.
+ * Returns { slug: agent id } (ids are the slugs on a fresh database).
+ */
+export async function ensureAgents(page, slugs, { activate = true } = {}) {
+  const lib = await api(page, '/api/library');
+  const ids = {};
+  for (const slug of slugs) {
+    const tpl = lib.templates.find((t) => t.slug === slug);
+    if (!tpl) throw new Error(`FAIL: no template ${slug}`);
+    const ws = await api(page, '/api/workspace');
+    let n = ws.nodes.find((x) => x.name === tpl.name);
+    if (!n) {
+      const r = await api(page, '/api/library/add', { templateId: slug });
+      if (!r.ok) throw new Error(`FAIL: add ${slug}: ${r.message}`);
+      n = { id: r.id, status: 'draft' };
+    }
+    if (activate && n.status !== 'active') {
+      await api(page, `/api/agents/${n.id}/test`, {});
+      const on = await api(page, `/api/agents/${n.id}/activate`, {});
+      if (!on.ok) throw new Error(`FAIL: activate ${slug}: ${on.message}`);
+    }
+    ids[slug] = n.id;
+  }
+  return ids;
+}
+
+/** A working team on the board: «Базовая команда» when there is no active planner yet. */
+export async function ensureBasicTeam(page) {
+  const ws = await api(page, '/api/workspace');
+  if (!ws.nodes.some((n) => n.teamRole === 'planner' && n.status === 'active')) {
+    const r = await api(page, '/api/library/team', {});
+    if (!r.ok) throw new Error(`FAIL: basic team: ${r.message}`);
+  }
+  const after = await api(page, '/api/workspace');
+  const idOf = (role, capability = null) =>
+    after.nodes.find(
+      (n) => n.teamRole === role && n.capability === capability && n.status === 'active',
+    )?.id;
+  return {
+    planner: idOf('planner'),
+    copywriter: idOf('worker', 'copywriting'),
+    reviewer: idOf('reviewer'),
+  };
 }

@@ -181,7 +181,7 @@ export const AgentDraftInput = {
       return { ok: false, message: 'Описание в одну строку: от 3 до 120 символов' };
     if (description.length > 600) return { ok: false, message: 'Описание длиннее 600 символов' };
     if (!modelRole || modelRole === 'classifier')
-      return { ok: false, message: 'Модель: CEO, Исполнитель или Critic' };
+      return { ok: false, message: 'Модель: сильная, обычная или для проверки' };
     return { ok: true, value: { name, role, description, modelRole, teamRole, capability } };
   },
 };

@@ -1,10 +1,11 @@
 // A task on mock: plan -> approve -> the board shows the dispatcher decisions on the edges,
 // «Ход задачи» and «Повтор» (1×/4×, slider). Run: E2E_PASSWORD=... pnpm test:e2e replay
-import { assert, openPanel, URL_BASE } from './helpers.mjs';
+import { assert, ensureBasicTeam, openPanel, URL_BASE } from './helpers.mjs';
 
 const { browser, page, errors } = await openPanel();
 const shots = process.env.E2E_SHOTS;
 try {
+  await ensureBasicTeam(page);
   await page.goto(URL_BASE + '/tasks/new');
   await page.locator('#brief').fill('Пост для Instagram про осеннее меню кофейни');
   await page.getByRole('button', { name: 'Создать' }).click();
@@ -18,7 +19,7 @@ try {
     .waitFor({ timeout: 60_000 });
 
   await page.goto(URL_BASE + '/');
-  await page.locator('.react-flow__node[data-id="ceo"]').waitFor();
+  await page.locator('.react-flow__node[data-id="brief"]').waitFor();
   await page.locator('#task-picker').selectOption(taskId);
   await page.getByRole('heading', { name: 'Ход задачи' }).waitFor();
   const label = page.locator('.ws-edge-decision').first();

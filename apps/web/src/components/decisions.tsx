@@ -64,7 +64,7 @@ export function PlanDecision({ taskId }: { taskId: string }) {
               busy={decide.isPending}
               onClick={() => decide.mutate({ action: 'change', comment: comment.trim() })}
             >
-              Отправить CEO
+              Отправить планировщику
             </Button>
             <Button variant="ghost" onClick={() => setEditing(false)}>
               Отмена
@@ -103,12 +103,14 @@ export function CopyItemView({ item }: { item: ItemView }) {
       <div className="copy-head">
         <b>{PLATFORM_LABEL[d.platform]}</b> — {d.topic}
         <span className="muted small"> · версия {item.version}</span>
-        {critic.passed ? (
-          <Pill tone="success">Critic: принято</Pill>
+        {!critic ? (
+          <Pill tone="muted">без проверки</Pill>
+        ) : critic.passed ? (
+          <Pill tone="success">Проверка: принято</Pill>
         ) : item.criticRejected ? (
-          <Pill tone="danger">Critic: не согласен после 2 правок</Pill>
+          <Pill tone="danger">Проверяющий не согласен после 2 правок</Pill>
         ) : (
-          <Pill tone="accent">Critic: замечания</Pill>
+          <Pill tone="accent">Проверка: замечания</Pill>
         )}
       </div>
       {item.ownerComment && (
@@ -155,28 +157,30 @@ export function CopyItemView({ item }: { item: ItemView }) {
           </table>
         </details>
       )}
-      <details className="critic">
-        <summary>Проверка Critic (раунд {item.criticRound})</summary>
-        <p className="small">{critic.summary}</p>
-        <ul className="small checks">
-          {Object.entries(critic.checks).map(([k, c]) => (
-            <li key={k}>
-              {c.ok ? '✅' : '⚠️'} {CHECK_LABEL[k] ?? k}
-              {c.comment ? ` — ${c.comment}` : ''}
-            </li>
-          ))}
-        </ul>
-        {critic.issues.length > 0 && (
-          <ul className="small">
-            {critic.issues.map((x, i) => (
-              <li key={i}>
-                {x.variant ? `Вариант ${x.variant}: ` : ''}
-                {x.problem} → {x.fix}
+      {critic && (
+        <details className="critic">
+          <summary>Проверка (раунд {item.criticRound})</summary>
+          <p className="small">{critic.summary}</p>
+          <ul className="small checks">
+            {Object.entries(critic.checks).map(([k, c]) => (
+              <li key={k}>
+                {c.ok ? '✅' : '⚠️'} {CHECK_LABEL[k] ?? k}
+                {c.comment ? ` — ${c.comment}` : ''}
               </li>
             ))}
           </ul>
-        )}
-      </details>
+          {critic.issues.length > 0 && (
+            <ul className="small">
+              {critic.issues.map((x, i) => (
+                <li key={i}>
+                  {x.variant ? `Вариант ${x.variant}: ` : ''}
+                  {x.problem} → {x.fix}
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
+      )}
     </div>
   );
 }
@@ -286,11 +290,11 @@ export function NodeItemView({ item }: { item: NodeItem }) {
         <span className="muted small"> · версия {item.version}</span>
         {item.critic &&
           (item.critic.passed ? (
-            <Pill tone="success">Critic: принято</Pill>
+            <Pill tone="success">Проверка: принято</Pill>
           ) : item.criticRejected ? (
-            <Pill tone="danger">Critic: не согласен после 2 правок</Pill>
+            <Pill tone="danger">Проверяющий не согласен после 2 правок</Pill>
           ) : (
-            <Pill tone="accent">Critic: замечания</Pill>
+            <Pill tone="accent">Проверка: замечания</Pill>
           ))}
       </div>
       {item.ownerComment && (

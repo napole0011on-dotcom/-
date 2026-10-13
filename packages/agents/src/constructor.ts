@@ -133,7 +133,7 @@ export interface ConstructorAgentDef {
 function taskPrompt(def: ConstructorAgentDef, input: NodeInput): string {
   const parts = [`Бриф владельца:\n${input.brief}`];
   parts.push(
-    `План CEO: ${input.plan.summary}\nЕдиницы контента:\n${json(
+    `План: ${input.plan.summary}\nЕдиницы контента:\n${json(
       input.plan.deliverables.map((d) => ({ id: d.id, platform: d.platform, topic: d.topic })),
     )}`,
   );

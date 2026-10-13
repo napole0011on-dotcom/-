@@ -9,7 +9,7 @@ const STATUS_RU: Record<string, string> = {
   planned: 'план готовится',
   awaiting_plan_approval: 'ждёт утверждения плана',
   in_progress: 'в работе',
-  in_review: 'проверка Critic',
+  in_review: 'на проверке',
   revision: 'доработка',
   awaiting_final_approval: 'ждёт вашего согласования',
   approved: 'утверждено',

@@ -1,7 +1,7 @@
 // Board layout at 1440 / 1024 / 400 px, light and dark: after «Авторасстановка» no two cards
 // overlap, nothing lies on the board over the cards, «Стоп» has a text label, the task picker
 // does not stretch the row. Run: E2E_PASSWORD=... pnpm test:e2e board  (E2E_SHOTS=dir saves PNGs)
-import { assert, openPanel } from './helpers.mjs';
+import { assert, ensureAgents, ensureBasicTeam, openPanel } from './helpers.mjs';
 
 const shots = process.env.E2E_SHOTS;
 const rects = (page) =>
@@ -16,9 +16,17 @@ const rects = (page) =>
     return { board, cards, over };
   });
 
+// A board of 12 cards: the basic team plus agents and tools from the library.
+const AGENTS = ['seo', 'image', 'kp', 'kp_render', 'stt_voice', 'video_transcribe', 'mailer_send'];
 for (const width of [1440, 1024, 400]) {
   const { browser, page, errors } = await openPanel({ width, height: 900 });
   try {
+    if (width === 1440) {
+      await ensureBasicTeam(page);
+      await ensureAgents(page, AGENTS);
+      await page.reload();
+      await page.locator('.react-flow__node[data-id="brief"]').waitFor();
+    }
     await page.getByRole('button', { name: 'Авторасстановка' }).click();
     await page.waitForTimeout(900);
     const { cards, over } = await rects(page);

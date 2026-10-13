@@ -75,7 +75,15 @@ const timeOf = (iso: string) =>
   });
 
 function graphNodes(ws: WorkspaceData): GraphNode[] {
-  return ws.nodes.map((n) => ({ id: n.id, name: n.name, kind: n.kind, status: n.status }));
+  // Roles and capabilities decide which links are allowed: the same check as on the server.
+  return ws.nodes.map((n) => ({
+    id: n.id,
+    name: n.name,
+    kind: n.kind,
+    status: n.status,
+    teamRole: n.teamRole,
+    capability: n.capability,
+  }));
 }
 
 export function Workspace() {
@@ -629,6 +637,30 @@ function WorkspaceInner() {
               <Icon name="plus" /> Агент
             </Button>
           </div>
+          {!data.nodes.some((n) => n.kind !== 'human') && (
+            <div className="ws-empty card stack" role="region" aria-label="Соберите команду">
+              <h2>Соберите команду</h2>
+              <p className="small muted">
+                На доске пока нет агентов — задачи будут ждать в «приёме». Нужен хотя бы
+                планировщик: он получает бриф и строит план.
+              </p>
+              <Button
+                variant="primary"
+                busy={basicTeam.isPending}
+                onClick={() => basicTeam.mutate(undefined)}
+              >
+                Базовая команда
+              </Button>
+              <span className="faint small">
+                Планировщик, Копирайтер и Проверяющий из библиотеки, связаны, проверены на mock и
+                включены.
+              </span>
+              <div className="row wrap">
+                <Button onClick={() => setLibrary('library')}>Выбрать из библиотеки</Button>
+                <Button onClick={() => setLibrary('empty')}>Создать с нуля</Button>
+              </div>
+            </div>
+          )}
           <div
             className="ws-board"
             onDragOver={(e) => {
@@ -645,30 +677,6 @@ function WorkspaceInner() {
               });
             }}
           >
-            {!data.nodes.some((n) => n.kind !== 'human') && (
-              <div className="ws-empty card stack" role="region" aria-label="Соберите команду">
-                <h2>Соберите команду</h2>
-                <p className="small muted">
-                  На доске пока нет агентов — задачи будут ждать в «приёме». Нужен хотя бы
-                  планировщик: он получает бриф и строит план.
-                </p>
-                <Button
-                  variant="primary"
-                  busy={basicTeam.isPending}
-                  onClick={() => basicTeam.mutate(undefined)}
-                >
-                  Базовая команда
-                </Button>
-                <span className="faint small">
-                  Планировщик, Копирайтер и Проверяющий из библиотеки, связаны, проверены на mock и
-                  включены.
-                </span>
-                <div className="row wrap">
-                  <Button onClick={() => setLibrary('library')}>Выбрать из библиотеки</Button>
-                  <Button onClick={() => setLibrary('empty')}>Создать с нуля</Button>
-                </div>
-              </div>
-            )}
             <ReactFlow<BoardNode, BoardEdge>
               nodes={nodes}
               edges={edges}

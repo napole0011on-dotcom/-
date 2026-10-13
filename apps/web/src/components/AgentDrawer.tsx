@@ -518,7 +518,7 @@ export function TestTab({ s, draft }: { s: AgentSettings; draft: string | null }
           )}
           {result.review && (
             <div className={result.review.passed ? 'success-box' : 'warn-card card'}>
-              <b>Critic: {result.review.passed ? 'принято' : 'есть замечания'}</b>
+              <b>Проверка: {result.review.passed ? 'принято' : 'есть замечания'}</b>
               <div className="small">{result.review.summary}</div>
               {result.review.issues.map((x, i) => (
                 <div key={i} className="small">

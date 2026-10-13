@@ -101,7 +101,7 @@ export function imageExecutor(d: ImageAgentDeps): NodeExecutor {
       const model = selfModel(ctx, d.self, 'worker');
       const parts = [
         `Бриф владельца:\n${input.brief}`,
-        `План CEO: ${input.plan.summary}\nЕдиницы контента:\n${json(
+        `План: ${input.plan.summary}\nЕдиницы контента:\n${json(
           input.plan.deliverables.map((x) => ({
             id: x.id,
             platform: PLATFORM_LABEL[x.platform],

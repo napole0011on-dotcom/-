@@ -28,6 +28,7 @@ import { useBlocks } from '../queries';
 import { agentVar } from '../workspace/nodes';
 import { Button, ErrorBox, Link, Loading, Pill, useAction, useToast } from '../ui';
 import { keyFromLabel } from './AgentBuilder';
+import { MODEL_ROLES, MODEL_ROLE_TEXT } from './NewAgent';
 
 type BlockNode = Node<{ block: Block; summary: string }, 'block'>;
 
@@ -168,13 +169,6 @@ function BlocksEditor({ id }: { id: string }) {
 
   if (isLoading) return <Loading />;
   if (!data || !comp) return <ErrorBox error={error ?? new Error('Агент не найден')} />;
-  if (data.agent.kind !== 'constructor')
-    return (
-      <div className="empty">
-        {data.agent.name} описан в коде — из блоков собираются агенты конструктора.{' '}
-        <Link to="/">На рабочий стол</Link>
-      </div>
-    );
   const block = comp.blocks.find((b) => b.id === sel) ?? null;
   const why = (c: Connection | Edge) => validateBlockLink(comp, c.source, c.target);
   const shownProblems = problems ?? (dirty ? null : data.problems);
@@ -386,9 +380,11 @@ function BlockProps({
             value={str('modelRole') || 'worker'}
             onChange={(e) => set({ modelRole: e.target.value })}
           >
-            <option value="worker">Исполнитель</option>
-            <option value="ceo">CEO</option>
-            <option value="critic">Critic</option>
+            {MODEL_ROLES.map((r) => (
+              <option key={r} value={r}>
+                {MODEL_ROLE_TEXT[r]}
+              </option>
+            ))}
           </select>
           <label className="small" htmlFor="blk-model">
             Модель

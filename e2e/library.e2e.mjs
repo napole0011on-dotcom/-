@@ -1,6 +1,6 @@
 // Agent library on mock: «+ Агент» opens it; search and categories; «Добавить» and a drag onto
-// the board make drafts; tool templates are marked «нужен ключ»; export has no secrets; import
-// adds the owner's template. Run: E2E_PASSWORD=... pnpm test:e2e library
+// the board make drafts; templates of paid services are marked «mock» and still work on mock;
+// export has no secrets; import adds the owner's template; the owner edits and deletes one. Run: E2E_PASSWORD=... pnpm test:e2e library
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,18 +28,21 @@ try {
     if (['Ответ на отзыв', 'Разбор поста'].includes(n.name) && n.status !== 'active')
       await api(`/api/agents/${n.id}/delete`, {});
   await page.reload();
-  await page.locator('.react-flow__node[data-id="ceo"]').waitFor();
+  await page.locator('.react-flow__node[data-id="brief"]').waitFor();
 
-  await page.getByRole('button', { name: 'Агент' }).click();
-  const lib = page.getByRole('dialog', { name: 'Библиотека агентов' });
+  await page.getByRole('button', { name: 'Агент', exact: true }).click();
+  const lib = page.getByRole('dialog', { name: 'Новый агент' });
   await lib.waitFor();
   await lib.getByLabel('Поиск агента').fill('отзыв');
   assert((await lib.locator('.library-card').count()) === 1, 'search finds «Ответ на отзыв»');
   await lib.getByLabel('Поиск агента').fill('');
   await lib.getByRole('button', { name: 'Инструменты' }).click();
-  const tool = lib.getByRole('article', { name: 'Шаблон «Картинки Magnific»' });
-  assert(await tool.getByText('нужен ключ').isVisible(), 'tool template is marked «нужен ключ»');
-  assert(await tool.getByRole('button', { name: 'Добавить' }).isDisabled(), '…and cannot be added');
+  const tool = lib.getByRole('article', { name: 'Шаблон «Отправка писем»' });
+  assert(
+    await tool.getByText('mock', { exact: true }).isVisible(),
+    'paid service is marked «mock»',
+  );
+  assert(await tool.getByRole('button', { name: 'Добавить' }).isEnabled(), '…and can be added');
   if (shots) await page.screenshot({ path: `${shots}/library.png` });
   await lib.getByRole('button', { name: 'Все' }).click();
 
@@ -61,7 +64,7 @@ try {
   assert(true, 'a drop on the board makes a draft card');
 
   // Export: template only, no secrets; import as the owner's template.
-  const exp = await api('/api/library/export/sys:taglines');
+  const exp = await api('/api/library/export/taglines');
   const text = JSON.stringify(exp);
   assert(
     exp.format === 'cms-agent-template' && !/apiKey|token|secret|password|brand/i.test(text),
@@ -77,6 +80,22 @@ try {
   await lib.getByLabel('Поиск агента').fill(exp.template.name);
   await lib.getByText('ваш · v1').waitFor();
   assert(true, "import adds the owner's template (v1)");
+
+  // The owner edits and deletes their template.
+  const mine = lib.getByRole('article', { name: `Шаблон «${exp.template.name}»` });
+  await mine.getByRole('button', { name: 'Изменить' }).click();
+  const edit = page.getByRole('dialog', { name: `Шаблон «${exp.template.name}»` });
+  await edit.getByLabel('Описание').fill('Мой вариант');
+  await edit.getByRole('button', { name: 'Сохранить' }).click();
+  await mine.getByText('ваш · v2').waitFor();
+  assert(true, 'edit makes a new version of the template');
+  await mine.getByRole('button', { name: 'Удалить' }).click();
+  await page
+    .getByRole('dialog', { name: /^Удалить шаблон/ })
+    .getByRole('button', { name: 'Удалить' })
+    .click();
+  await mine.waitFor({ state: 'detached' });
+  assert(true, 'the owner deletes a template');
   assert(errors.length === 0, `no page errors ${errors.join('; ')}`);
   console.log('library e2e: ok');
 } finally {

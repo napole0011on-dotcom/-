@@ -268,7 +268,8 @@ export interface ItemView {
   version: number;
   deliverable: Deliverable;
   item: CopyItem;
-  critic: Verdict;
+  /** null: the step had no reviewer on the board («без проверки»). */
+  critic: Verdict | null;
   criticRound: number;
   criticRejected: boolean;
   ownerComment: string | null;

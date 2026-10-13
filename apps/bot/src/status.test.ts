@@ -29,7 +29,7 @@ describe('startup greeting: active provider and models', () => {
     expect(text).toMatch(/LLM: Token Harbor \(шлюз\)/);
     expect(text).toMatch(/Адрес шлюза: tokenharbor\.ai/);
     expect(text).toMatch(
-      /CEO — claude-haiku-5\.5:free; Copywriter — claude-haiku-5\.5:free; Critic — claude-haiku-5\.5:free/,
+      /сильная — claude-haiku-5\.5:free; обычная — claude-haiku-5\.5:free; проверка — claude-haiku-5\.5:free/,
     );
     expect(text).toMatch(/Structured outputs: нет/);
     expect(text).toMatch(/60\/мин, 1800\/час/);

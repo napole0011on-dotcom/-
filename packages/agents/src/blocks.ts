@@ -76,7 +76,7 @@ export const BLOCK_KINDS: Record<BlockType, BlockKind> = {
   check: {
     type: 'check',
     label: 'Проверка',
-    hint: 'Критерии для Critic: результат проверяется, до 2 доработок',
+    hint: 'Критерии для проверяющего: результат проверяется, до 2 доработок',
     accepts: ['output'],
     max: 1,
     required: false,

@@ -145,7 +145,7 @@ export function RunPage({ id }: { id: string }) {
             {data.artifacts.map((a) => (
               <li key={a.id}>
                 {a.slot} v{a.version} <span className="muted small">{a.promptVersion}</span>
-                {a.critic ? ` — Critic: ${a.critic.passed ? 'принято' : 'замечания'}` : ''}
+                {a.critic ? ` — проверка: ${a.critic.passed ? 'принято' : 'замечания'}` : ''}
               </li>
             ))}
           </ul>

@@ -13,7 +13,7 @@ export function describeLlmSetup(config: AppConfig, pricing: ModelPricing): stri
   const lines = [`LLM: ${PROVIDER_LABEL[llm.provider]}`];
   if (llm.baseUrl) lines.push(`Адрес шлюза: ${new URL(llm.baseUrl).host}`);
   lines.push(
-    `Модели: CEO — ${m.ceo}; Copywriter — ${m.worker}; Critic — ${m.critic}; classifier — ${m.classifier}`,
+    `Модели: сильная — ${m.ceo}; обычная — ${m.worker}; проверка — ${m.critic}; классификатор — ${m.classifier}`,
     `Structured outputs: ${llm.structuredOutputs ? 'да (output_config.format)' : 'нет — схема в промпте, проверка Zod'}`,
   );
   if (llm.rateLimit.perMinute || llm.rateLimit.perHour) {

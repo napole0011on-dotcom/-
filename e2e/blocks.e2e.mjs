@@ -1,11 +1,13 @@
 // Agents from blocks on mock: a new draft -> «Блоки» (inner view with breadcrumbs) -> palette
 // adds a block -> a wrong port is refused with a reason -> fields -> save -> «Собрать в агента»
 // -> «Тест и включение». Run: E2E_PASSWORD=... pnpm test:e2e blocks
-import { assert, openPanel, URL_BASE } from './helpers.mjs';
+import { assert, ensureBasicTeam, openPanel, URL_BASE } from './helpers.mjs';
 
 const shots = process.env.E2E_SHOTS;
 const { browser, page, errors } = await openPanel();
 try {
+  // «Проверка» links the agent to a reviewer on the board: the basic team has one.
+  await ensureBasicTeam(page);
   const name = `Слоганы ${Date.now() % 100000}`;
   const created = await page.evaluate(async (n) => {
     const s = await (await fetch('/api/session')).json();

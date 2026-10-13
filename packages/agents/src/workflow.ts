@@ -751,10 +751,14 @@ export class Workflow {
       (media === 'voice'
         ? 'Задача из голосового сообщения: что нужно сделать — в расшифровке во вложении.'
         : 'Контент по видео: используй расшифровку во вложении (краткое содержание, идеи для Reels).');
-    const { taskId } = await this.submitBrief(t.tr.brandId, brief, actor, {
+    const r = await this.submitBrief(t.tr.brandId, brief, actor, {
       attachments: [{ kind: 'transcript', id: t.tr.id, media, name: t.file.originalName }],
     });
-    return { ok: true, message: 'Задача создана, CEO готовит план', taskId };
+    return {
+      ok: true,
+      message: r.planned ? 'Задача создана, планировщик готовит план' : r.message,
+      taskId: r.taskId,
+    };
   }
 
   /** Telegram voice / panel upload: store the file (limits checked) and queue the transcription. */

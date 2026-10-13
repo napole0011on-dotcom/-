@@ -27,7 +27,8 @@ export function NewTask() {
           onChange={(e) => setBrief(e.target.value)}
         />
         <div className="muted small">
-          CEO составит план с оценкой стоимости — он придёт на согласование сюда и в Telegram.
+          Планировщик составит план с оценкой стоимости — он придёт на согласование сюда и в
+          Telegram.
         </div>
         <div className="row">
           <Button
