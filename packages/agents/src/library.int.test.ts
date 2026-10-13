@@ -3,6 +3,7 @@ import { schema, sql } from '@cms/db';
 import { setupTestDb, type TestDb } from '@cms/engine/testkit';
 import { activationProblems, resolveAgent } from './agent-registry.js';
 import { BrandProfile, upsertBrand } from './brand.js';
+import { overlaps } from './graph.js';
 import {
   addFromTemplate,
   exportTemplate,
@@ -46,6 +47,12 @@ describe('agent library (Postgres)', () => {
     expect((await activationProblems(t.db, b, ref)).length).toBeGreaterThan(0);
     const ws = await loadWorkspace(t.db, b);
     expect(ws.layout[r.id!]).toEqual({ x: 900, y: 700 });
+    // Dropped onto another card: moved to the closest free spot instead.
+    const onCeo = await addFromTemplate(t.db, b, 'sys:headlines', OWNER, ws.layout.ceo);
+    const after = await loadWorkspace(t.db, b);
+    const mine = after.layout[onCeo.id!]!;
+    for (const [id, p] of Object.entries(after.layout))
+      if (id !== onCeo.id) expect(overlaps(p, mine), id).toBe(false);
     // A second copy gets its own id and name check.
     expect((await addFromTemplate(t.db, b, 'sys:taglines', OWNER)).message).toMatch(/уже есть/);
   });

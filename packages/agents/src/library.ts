@@ -9,7 +9,8 @@ import {
 } from './agent-registry.js';
 import { OutputField } from './fields.js';
 import { activePrompt } from './prompt-store.js';
-import { saveLayout } from './workspace.js';
+import { nearestFree } from './graph.js';
+import { loadWorkspace, saveLayout } from './workspace.js';
 
 const { agentTemplates, auditLog } = schema;
 
@@ -391,7 +392,14 @@ export async function addFromTemplate(
     actor,
   );
   if (!upd.ok) return upd;
-  if (position) await saveLayout(db, brandId, { [created.id]: position }, actor, 'layout_moved');
+  if (position) {
+    // Never on top of another card: the closest free spot to the drop point.
+    const ws = await loadWorkspace(db, brandId);
+    const taken = Object.entries(ws.layout)
+      .filter(([id]) => id !== created.id)
+      .map(([, p]) => p);
+    await saveLayout(db, brandId, { [created.id]: nearestFree(taken, position) }, actor);
+  }
   await db.insert(auditLog).values({
     brandId,
     actorKind: actor.kind,

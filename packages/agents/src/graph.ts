@@ -327,3 +327,25 @@ export function freeSpot(
     }
   return { x: stepX, y: bottom + stepY };
 }
+
+/** The free spot closest to where a card was dropped (spiral over the card grid around it). */
+export function nearestFree(
+  taken: { x: number; y: number }[],
+  p: { x: number; y: number },
+): { x: number; y: number } {
+  if (!taken.some((t) => overlaps(t, p))) return p;
+  const dx = NODE_W + GAP_X;
+  const dy = NODE_H + GAP_Y;
+  for (let r = 1; r < 30; r++)
+    for (let i = -r; i <= r; i++)
+      for (const [x, y] of [
+        [i, -r],
+        [i, r],
+        [-r, i],
+        [r, i],
+      ] as const) {
+        const q = { x: Math.max(0, p.x + x * dx), y: Math.max(0, p.y + y * dy) };
+        if (!taken.some((t) => overlaps(t, q))) return q;
+      }
+  return freeSpot(taken);
+}

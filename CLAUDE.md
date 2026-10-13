@@ -17,7 +17,7 @@ Image Generator, Video Ideas, Instagram Analyst, SEO Specialist, Critic. Нич�
 | 2.6 Конструктор агентов (реестр, тест перед включением) | готово                   |
 | 3. Image (mock Magnific), SEO (пресет), DAG             | готово (Magnific — mock) |
 | 2.7 Reels, КП, рассылка, голос/видео → текст            | готово на mock           |
-| 6A–C Сбои провайдера, связи, диспетчер                  | готово                   |
+| 6A–G Сбои LLM, связи, диспетчер, ход, блоки, библиотека | готово на mock           |
 | Приёмка 2.6–2.7 (Chromium, чистая база, mock)           | готово                   |
 | 4. Instagram Analyst (CSV → Graph API)                  | не начат                 |
 | 5. Панель, эксплуатация, деплой                         | не начат                 |
@@ -54,6 +54,7 @@ apps/bot            Telegram-бот + воркер очереди + обслуж
   src/bot.ts           белый список, команды, кнопки, ввод комментариев (ForceReply)
   src/telegram-channel.ts, format.ts  сообщения гейтов (HTML, ≤ 4096 символов)
   src/smoke.ts         pnpm smoke:llm — первый реальный вызов с лимитом $0.02
+pnpm test:e2e [имя]      # Chromium по запущенной панели на mock: links, board, replay, blocks, library (E2E_PASSWORD)
 packages/agents     агенты и сценарий
   prompts/*.md         системные промпты (front matter version: N); ai-cliches.ru.txt — штампы
   src/agents/          ceo, copywriter, critic — вход/выход по Zod, без побочных эффектов
